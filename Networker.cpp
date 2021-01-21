@@ -1,34 +1,72 @@
 /* 
-    impl. notes:
-    -can't listen and connect on same socket
-    -check out setsockopt() in geeksforgeeks()
+design notes: 
+Q:How does the RAFT main-loop interact with networking? 
+A: The prime consideration is around synchronization and blocking, and there are
+many options. First, we have decided to make the networking calls
+non-blocking. This "pulls complexity downward" and makes life easier for the
+top-level client. Multi-threading must almost certainly exist somewhere, and
+we are choosing it to exist at the bottom level, instead of at the top. This
+allows the RAFT implementation to be entirely single-threaded if it wants.
 
-    -current map technique saves us from remaking sockets when we repeatedly send messages, 
-    but we still make a new one for each received message, as accept() creates a new 
-    socket each time. rip. we might need to rethink this. wait...or not. if we alreadly have the map
-    entry, we should be writing to the fd. so we're good...?  ah, yes, the receive is broken then. send 
-    with the map stops sending connect() calls, so there will be no effect from receive calling accept(). 
-    receive must instead check and read on it's open fds??? tough.  
-        -also, we might want to consider a protocol for delimiting the messages...? right now receive() will
-        just read bytes, which could be .5 a message, 1.5 messages, etc. Perhaps we can make Messenger deal 
-        with this..? 
+The reason that blocking calls force the top-level raft client to use
+multithreading is that if a blocking call takes longer than a timer - ex. the
+election timeout for followers - then the algorithm implementation becomes
+incorrect. In a more extreme case, there is a cold-start issue in which all N
+servers connect, assume follower state, and block while waiting for messages
+from each other, which never come. Perhaps a timed wait would solve this, but
+that's more complex, since it'd require passing the desired time from the
+raft client to the messenger and then to the networker.
 
+implementaiton notes: 
+1. todo: add locking where needed.
 
-    protocol buffer notes: 
-    -create a filebuf by calling open on an fd. then create an iostream w/ filebuf as constructor arg. 
-    -with that, we can ParseFromIstream(my_iostream) and SerialzeToOstream(my_iostream)
+2. I decided that the API should be sendAll() and getNextReadableFd(). There
+are a few things to address here. First, the networker should not be aware of
+the "messages" concept, just bytes to be read / sent. Given this, it makes
+sense that the burden of doing particular reading and delimitting will fall
+on the messenger class. Since this will involve calls to 'read()', it makes
+sense to be working in terms of fds, as opposed to something higher level
+like IP/port.
 
-    todo: 
-    -perhaps change send()/receive() using vector<char>
-    -read up on linux accept, there might be cool automation to try:  
-    "In order to be notified of incoming connections on a socket, 
-     you can use select(2), poll(2), or epoll(7)." - linux accept() docs
+3. Thinking ahead to raft, I know we're going to be doing single-threaded,
+which is good, but I still see two different approaches: timer-based or
+hot-loop. The timer-based approach is perhaps better because it saves
+resources, but I need to make sure it's correct. But essentially we'd sleep
+for the appropriate timer duration (election timeout for C/F, heartbeat for
+L). Then on wakeup, we'd perform the algorithm steps and check if any RPCs
+came. The ideal scenario is to couple this with an early wakeup if any RPCs
+arrive, but that's going to require setting up some signals to be sent, which
+seems difficult. In the worst case, hot-loop will work, so that's the good
+news :)
 
-     -design choice: it's tempting to add a method to conect to all other raft servers.
-     because we'd like to have all connections in place, then start the main server loop 
-     w/ timers, etc. should we provide a method for that here? yeah, we can just call it 
-     'establishConnection' or something, and the Messenger will call it on each server 
-     on file. 
+4. For the delimiting messages implementation, the most simple approach to
+follow is doing a single read for the first 4 bytes for the size of the
+packet, and then doing a readAll() for that # of bytes after that. It's a
+tiny bit of overhead in that it might end up adding +1 read() call each time,
+but it makes the code super simple, and I don't care about performance enough
+on my 1st time implementing something like this to care.
+
+5. getNextReadableFd() and messenger usage pattern: As an example, lets say
+that fd 5 is ready. We read 1 msg from it (blocking a bit if necessary).
+Then, we need to check if another message is there. We should do this with a
+non-blocking read() call of 4 bytes, I think... Or could we call poll() on it
+with 0 timeout, which is kindof pog. 
+
+More todos: 
+-handle the possibility of dropped connections
+-remove '_currConnections' if no longer needed
+-more seriously consider the problem of 2 sockets created between a single 
+pair of servers on startup.  
+-epoll() instead of poll()? 
+-later: think about IPv6
+
+Assumptions:
+-the blocking for reads/writes is acceptable for the client
+    -messenger: if some bytes are ready to read, then the rest will be ready 
+    soon enough that force-reading all is fine...(not true if server crashes
+    in the middle of sending message).
+    -sendAll() is safe. is this untrue if we're writing to a connection to
+    a server that's crashed? 
 */
 
 #include "Networker.h"
@@ -37,55 +75,113 @@
 #include <sys/socket.h>
 #include <sys/types.h> 
 
+/* for poll() */
+#include <poll.h>
+
 /* sockaddr_in */
 #include <netinet/in.h>
 
 /* for write() and read() */
 #include <unistd.h>
 
-const short MAX_CONNECTIONS = 10;
+#include <thread>
+
+#include <cassert>
+
+/* a limit argument for listen() */
+const short MAX_BACKLOG_CONNECTIONS = 10;
 
 
-/* Setup a socket on the given port.
+/* Background thread routine to establish incoming connection requeuests. 
  *
- * After the following, future calls to send() and receive() 
- * will use the port, server address, and listen fd, which are set here. */
-Networker::Networker(const short port) {
-    memset(&_addr, '0', sizeof(_addr));
+ */
+void Networker::listener_routine() {
+    while(true) {
+        // accept new connection and store client information in 'serv_addr'
+        struct sockaddr_in serv_addr;
+        memset(&serv_addr, '0', sizeof(serv_addr));
+        socklen_t addrlen = sizeof(serv_addr);
+        int connfd = accept(_listenfd, (struct sockaddr *)&serv_addr, &addrlen);
 
-    // create socket
+        // save this connection for future use
+        std::lock_guard<std::mutex> lock(_m);
+        if (_currConnections.count(serv_addr)) {
+           /* concurrency case: if we're already connected to this server, we
+            * must have completed a call to 'establishConnection()' before 
+            * this. That necessitates that the peer server called 'accept()' on
+            * us, so we can safely close this new connection. 
+            * 
+            * Note: it's also just easier to keep the 2 sockets and not close 
+            * them, which we're doing now. Calling 'close()' might mean we 
+            * need to handle the case where we close our peer's connection. 
+            * Todo: map this on paper to see if that's even possible. */
+        } else {
+            _currConnections[serv_addr] = connfd;
+
+            // add to set of polled connections
+            if (_pfds_size == _pfds_capacity) {
+                _pfds_capacity *= 2;
+                realloc(_pfds, _pfds_capacity);
+            }
+            _pfds[_pfds_size].fd = connfd;
+            _pfds[_pfds_size].events = POLLIN;
+            ++_pfds_size;
+        }
+
+    } 
+}
+
+
+/* Spawn a background thread to listen for incoming connections.  
+ *
+ */
+Networker::Networker(const short port) {
+    // initialize members
+    memset(&_addr, '0', sizeof(_addr));
+    _addr.sin_family = AF_INET; // use IPv4
+    _addr.sin_addr.s_addr = INADDR_ANY; // use local IP
+    _addr.sin_port = htons(port);
+
+    _pfds_size = 0;
+    _pfds_capacity = 10;
+    _pfds = (pollfd*) malloc(sizeof(pollfd) * _pfds_capacity);
+
+    // create the dedicated listening socket
     if((_listenfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
     {
         perror("\n Error : socket() failed \n");
         exit(EXIT_FAILURE);
     } 
 
-    // specify server details, bind socket
-    _addr.sin_family = AF_INET; // use IPv4
-    _addr.sin_addr.s_addr = INADDR_ANY; // use local IP
-    _addr.sin_port = htons(port);
-
     if (bind(_listenfd, (struct sockaddr*)&_addr, sizeof(_addr)) < 0) {
         perror("\n Error : bind() failed \n");
         exit(EXIT_FAILURE);
     }
-
-    // listen
-    if (listen(_listenfd, MAX_CONNECTIONS) < 0) {
+    if (listen(_listenfd, MAX_BACKLOG_CONNECTIONS) < 0) {
         perror("\n Error : listen() failed \n");
         exit(EXIT_FAILURE);
     }
+
+    // start listener thread in the background
+    std::thread th(listener_routine); // never .join()'ed, as it loops forever
 }
 
 
-/* Send bytes to a server at the specified address. 
- *
- * If a connection hasn't been established, creates a new one and 
- * saves it for re-use. 
+/* Cleans up resources on program exit. 
  * 
- * Note: method is 'void' over 'bool' because we'd 
- * rather crash in the rare failure case than make the caller check for failure. */
-void Networker::send(const struct sockaddr_in& serv_addr, const vector<char>& message) {
+ * Note: there's nothing to do for the thread, since it loops forever. */
+Networker::~Networker() {
+    free(_pfds);
+}
+
+
+/* Establishes a connection with a server at the specified address, and returns 
+ * the associated file descriptor for communication. 
+ * 
+ * Note: if we already have made a connection with the server of interest (ie. 
+ * we accept()'ed a connection from them already) then we will not create a new
+ * socket connection, and instead recycle the old one. */
+int Networker::establishConnection(const struct sockaddr_in& serv_addr) {
     int connfd;
     // create a connection if it doesn't already exist
     if (!_currConnections.count(serv_addr)) {
@@ -94,18 +190,46 @@ void Networker::send(const struct sockaddr_in& serv_addr, const vector<char>& me
             perror("\n Error : socket() failed \n");
             exit(EXIT_FAILURE);
         } 
-        if(connect(connfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        if(connect(connfd, (struct sockaddr *)&serv_addr, 
+                   sizeof(serv_addr)) < 0) {
             perror("\n Error : connect() failed \n");
             exit(EXIT_FAILURE);
         } 
-        _currConnections[serv_addr] = connfd;
+
+        // save connection for future use
+        std::lock_guard<std::mutex> lock(_m);
+        if (_currConnections.count(serv_addr)) {
+            // see corresponding concurency note above in 'listener_routine()'
+        } else {
+            _currConnections[serv_addr] = connfd;
+
+            // add to set of polled connections
+            if (_pfds_size == _pfds_capacity) {
+                _pfds_capacity *= 2;
+                realloc(_pfds, _pfds_capacity);
+            }
+            _pfds[_pfds_size].fd = connfd;
+            _pfds[_pfds_size].events = POLLIN;
+            ++_pfds_size;
+        }
     }
 
-    connfd = _currConnections[serv_addr];
+    return _currConnections[serv_addr];
+}
 
+
+/* Send all bytes to a connection with the specified file descriptor.  
+ *
+ * If a connection associated with the provided file descriptor doesn't exist, 
+ * the behavior is undefined (write to an unknown fd).  
+ * 
+ * Note: method is 'void' over 'bool' because we'd rather crash in the rare
+ * failure case than make the caller check the validity of each call. */
+void Networker::sendAll(const int connfd, const char* buf, const int length) { 
+    // write the entire buffer's contents
     int bytes_written = 0;
-    while (bytes_written < message.size()) {
-        int n = write(connfd, (char*)&message + bytes_written, message.size() - bytes_written);
+    while (bytes_written < length) {
+        int n = send(connfd, buf + bytes_written, length - bytes_written, 0);
         if (n < 0) {
             perror("\n Error : write() failed \n");
             exit(EXIT_FAILURE);
@@ -115,26 +239,30 @@ void Networker::send(const struct sockaddr_in& serv_addr, const vector<char>& me
 }
 
 
-/* Recieve queued messages (if any). 
- *
- * If this is the first communication with the sender, we save it for re-use. 
- * Currently, this call blocks, which the caller must be aware of.  */
-vector<char> Networker::receive() {
-    struct sockaddr_in serv_addr;
-    socklen_t addrlen = sizeof(serv_addr);
-    //int connfd = accept4(_listenfd, (struct sockaddr *)&serv_addr, &addrlen, SOCK_NONBLOCK);
-    // todo: this call is blocking, above is fix, but won't work. fnctl() may fix below? 
-    int connfd = accept(_listenfd, (struct sockaddr *)&serv_addr, &addrlen); 
-
-    // save this connection for future use
-    _currConnections[serv_addr] = connfd;
-
-    vector<char> result;
-    char buf [1024];
-    int n;
-    while (n = read(_listenfd, buf, sizeof(buf)) > 0) {
-        result.insert(result.end(), &buf[0], &buf[n]);
+/* Return a file descriptor on which data is available to read, or -1 if 
+ * no such descriptors are available.  
+ * 
+ * The call is designed to be non-blocking for caller convenience. 
+ * 
+ * Note: this method can also be implemented with a supplemental background
+ * thread whose job is to call poll() in the background, but using a 
+ * non-blocking poll() call here seemed simpler, if less efficient. */
+int Networker::getNextReadableFd() {
+    // if no readable fds left, check for more with poll() 
+    if (_readableFds.size() == 0) {
+        std::lock_guard<std::mutex> lock(_m);
+        int n_ready = poll(_pfds, _pfds_size, 0); // '0' -> non-blocking
+        if (n_ready == 0) {
+            return -1;
+        }
+        for (int i = 0; i < _pfds_size; ++i) {
+            if (_pfds[i].revents & POLLIN) {
+                _readableFds.push(_pfds[i].fd);
+            }
+        }
     }
 
-    return result;
+    int result_fd= _readableFds.front();
+    _readableFds.pop();
+    return result_fd;
 }
