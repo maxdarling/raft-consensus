@@ -1,7 +1,2 @@
-# ignore CMake build artifacts
-CMakeCache.txt
-CMakeFiles/
-Makefile
-cmake_install.cmake
-raft
-run_server
+# ignore CMake build folder
+build
