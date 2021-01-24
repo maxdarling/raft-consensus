@@ -1,2 +1,4 @@
 # ignore CMake build folder
 build
+.DS_Store
+.vscode
