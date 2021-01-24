@@ -1,14 +1,29 @@
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <queue>
+
+#include <mutex>
+
+#include <thread>
 
 /* sockaddr_in */
 #include <netinet/in.h>
 
 using std::vector;
 using std::unordered_map;
+using std::map;
 using std::queue;
 
+struct cmpByAddr {
+    bool operator()(const struct sockaddr_in& a, const struct sockaddr_in& b) const {
+        if (a.sin_port != b.sin_port) {
+            return a.sin_port < b.sin_port;
+        }
+        return a.sin_addr.s_addr < b.sin_addr.s_addr;
+
+        }
+};
 
 class Networker {
     public: 
@@ -16,7 +31,7 @@ class Networker {
         ~Networker();
 
         int establishConnection(const struct sockaddr_in& serv_addr);
-        void sendAll(const int connfd, const char* message, int length);
+        void sendAll(const int connfd, const char* message, int length); 
         int getNextReadableFd();
 
     private:
@@ -28,7 +43,12 @@ class Networker {
 
         std::mutex _m;
 
-        unordered_map<sockaddr_in, int> _currConnections;
+        std::thread t2;
+
+        //unordered_map<sockaddr_in, int> _currConnections; 
+        map<struct sockaddr_in, int, cmpByAddr> _currConnections; // above requires custom hash
+        //map<struct sockaddr_in, int> _currConnections; // above requires custom hash
+        //map<sockaddr_in, int, decltype(cmp)> _currConnections;
 
         struct pollfd* _pfds;
         int _pfds_size; 

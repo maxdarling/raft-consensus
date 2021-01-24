@@ -53,6 +53,7 @@ non-blocking read() call of 4 bytes, I think... Or could we call poll() on it
 with 0 timeout, which is kindof pog. 
 
 More todos: 
+-rename "sendAll" - seems like sending to all servers
 -handle the possibility of dropped connections
 -remove '_currConnections' if no longer needed
 -more seriously consider the problem of 2 sockets created between a single 
@@ -100,9 +101,9 @@ void Networker::listener_routine() {
         // accept new connection and store client information in 'serv_addr'
         struct sockaddr_in serv_addr;
         memset(&serv_addr, '0', sizeof(serv_addr));
-        socklen_t addrlen = sizeof(serv_addr);
-        int connfd = accept(_listenfd, (struct sockaddr *)&serv_addr, &addrlen);
-
+        socklen_t addrlen = sizeof(serv_addr); 
+        int connfd = accept(_listenfd, (struct sockaddr *)&serv_addr, &addrlen); 
+        
         // save this connection for future use
         std::lock_guard<std::mutex> lock(_m);
         if (_currConnections.count(serv_addr)) {
@@ -121,7 +122,7 @@ void Networker::listener_routine() {
             // add to set of polled connections
             if (_pfds_size == _pfds_capacity) {
                 _pfds_capacity *= 2;
-                realloc(_pfds, _pfds_capacity);
+                _pfds = (struct pollfd*) realloc(_pfds, _pfds_capacity);
             }
             _pfds[_pfds_size].fd = connfd;
             _pfds[_pfds_size].events = POLLIN;
@@ -141,6 +142,14 @@ Networker::Networker(const short port) {
     _addr.sin_family = AF_INET; // use IPv4
     _addr.sin_addr.s_addr = INADDR_ANY; // use local IP
     _addr.sin_port = htons(port);
+
+    //auto cmp = [](const struct sockaddr_in& a, const struct sockaddr_in& b) {
+    //    if (a.sin_port != b.sin_port) {
+    //        return a.sin_port < b.sin_port;
+    //    }
+    //    return a.sin_addr.s_addr < b.sin_addr.s_addr;
+    //};
+    //_currConnections = map<sockaddr_in, int, decltype(cmp)>(cmp);
 
     _pfds_size = 0;
     _pfds_capacity = 10;
@@ -163,7 +172,7 @@ Networker::Networker(const short port) {
     }
 
     // start listener thread in the background
-    std::thread th(listener_routine); // never .join()'ed, as it loops forever
+    std::thread th(&Networker::listener_routine, this); // never .join()'ed, as it loops forever
 }
 
 
@@ -206,7 +215,7 @@ int Networker::establishConnection(const struct sockaddr_in& serv_addr) {
             // add to set of polled connections
             if (_pfds_size == _pfds_capacity) {
                 _pfds_capacity *= 2;
-                realloc(_pfds, _pfds_capacity);
+                _pfds = (struct pollfd*) realloc(_pfds, _pfds_capacity);
             }
             _pfds[_pfds_size].fd = connfd;
             _pfds[_pfds_size].events = POLLIN;
