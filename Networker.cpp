@@ -143,6 +143,7 @@ Networker::Networker(const short port) {
     _addr.sin_addr.s_addr = INADDR_ANY; // use local IP
     _addr.sin_port = htons(port);
 
+    // todo: figure out if we can use this, instead of non-hidden header code
     //auto cmp = [](const struct sockaddr_in& a, const struct sockaddr_in& b) {
     //    if (a.sin_port != b.sin_port) {
     //        return a.sin_port < b.sin_port;
@@ -173,6 +174,9 @@ Networker::Networker(const short port) {
 
     // start listener thread in the background
     std::thread th(&Networker::listener_routine, this); // never .join()'ed, as it loops forever
+    th.detach();
+    //std::thread th(foo); // never .join()'ed, as it loops forever
+    //_th = std::thread(&Networker::listener_routine, this);
 }
 
 

@@ -15,6 +15,7 @@ using std::unordered_map;
 using std::map;
 using std::queue;
 
+// todo: figure out how to hide this in the source somehow
 struct cmpByAddr {
     bool operator()(const struct sockaddr_in& a, const struct sockaddr_in& b) const {
         if (a.sin_port != b.sin_port) {
@@ -42,8 +43,6 @@ class Networker {
         struct sockaddr_in _addr;
 
         std::mutex _m;
-
-        std::thread t2;
 
         //unordered_map<sockaddr_in, int> _currConnections; 
         map<struct sockaddr_in, int, cmpByAddr> _currConnections; // above requires custom hash
