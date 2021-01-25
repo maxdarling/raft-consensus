@@ -4,7 +4,7 @@
 #include <iostream>
 #include <unistd.h>
 
-#include "Networker.h"
+#include "Messenger.h"
 
 using std::cout;
 using std::endl;
@@ -19,9 +19,7 @@ const int LAST_SERVER_NUMBER = 2;
 // would remain in that loop and continue to issue 'connect()' calls until 
 // all of them worked. 
 
-int main(int argc, char* argv[])
-{
-    int serverNumber = std::stoi(argv[1]);
+void NetworkerTester(int serverNumber) {
     int port = PORT_BASE + serverNumber; 
     Networker networker(port);
     
@@ -78,6 +76,71 @@ int main(int argc, char* argv[])
             ++n_messages_sent;
         }
     }
+
+
+}
+
+void MessengerTester(int serverNumber) {
+    int port = PORT_BASE + serverNumber; 
+    cout << "Server #" << serverNumber << " has started" << endl;
+
+    // define the server list
+    int nServers = 2;
+    vector<serverInfo> serverList(nServers);
+
+    for (int i = 1; i <= serverList.size(); ++i) {
+        struct sockaddr_in addr;
+        memset(&addr, '0', sizeof(addr));
+        addr.sin_family = AF_INET; // use IPv4
+        addr.sin_addr.s_addr = INADDR_ANY; // use local IP
+        addr.sin_port = htons(PORT_BASE + i);
+        serverList.push_back(serverInfo{addr, i});
+    }
+
+    // start Messenger
+    Messenger messenger(serverNumber, serverList);
+    
+
+    // send messages
+    int n_messages_sent = 0;
+    while(true) {
+        // pick a random server to send a message to
+        int peerServerNumber = 1 + (rand() % serverList.size());
+        
+        // construct a message
+        std::string command = "Message #" + std::to_string(++n_messages_sent) + 
+                              " from server #" + std::to_string(serverNumber);
+ 
+        RPC::container msgWrapper;
+        //msgWrapper.set_allocated_clientrequest_message(&msg); // why 'allocated'??
+        msgWrapper.mutable_clientrequest_message()->set_command(command);
+        
+        // send the message
+        messenger.sendMessage(peerServerNumber, msgWrapper);
+
+       sleep(5);
+
+        // check for received messages
+        // std::optional<RPC::container> incMsgWrapper = messenger.getNextMessage();
+        // if (incMsgWrapper) {
+        //     if (!(*incMsgWrapper).has_appendentries_message() && 
+        //         !(*incMsgWrapper).has_requestvote_message() && 
+        //         (*incMsgWrapper).has_clientrequest_message()) {
+        //         cout << "Message received:" << endl;
+        //         cout << (*incMsgWrapper).clientrequest_message().command() << endl; 
+        //     }
+        // }
+    }
+
+
+}
+
+int main(int argc, char* argv[])
+{
+    GOOGLE_PROTOBUF_VERIFY_VERSION;
+    int serverNumber = std::stoi(argv[1]);
+    //NetworkerTester(serverNumber);
+    MessengerTester(serverNumber);
 
     return 0;
 }

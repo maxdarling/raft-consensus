@@ -78,13 +78,13 @@ void Messenger::sendMessage(const int serverId, const RPC::container& message) {
     // serialize message and its length
     std::string messageBytes = message.SerializeAsString();
 
-    RPC::containerLength messageLength;
-    messageLength.set_length(messageBytes.length());
-    std::string messageLen = messageLength.SerializeAsString();  
+    int len = messageBytes.length();
+    printf("Sending message of length %d, not to be confused with %d", len, htonl(len));
+    len = htonl(len);
 
     // send the message length, then the message itself
     int connfd = _serverIdToFd[serverId];
-    _networker->sendAll(connfd, messageLen.c_str(), messageLen.length());
+    _networker->sendAll(connfd, (char *)&len, sizeof(len)); 
     _networker->sendAll(connfd, messageBytes.c_str(), messageBytes.length());
 }
 
@@ -103,8 +103,8 @@ std::optional<RPC::container> Messenger::getNextMessage() {
     }
 
     // read the message bytes first
-    char lenBuf [sizeof(RPC::containerLength::length)]; // 32-bit int
-    int n = read(connfd, lenBuf, sizeof(lenBuf));
+    int len;
+    int n = read(connfd, &len, sizeof(len));
     if (n < 0) {
         perror("\n Error : read() failed \n");
         exit(EXIT_FAILURE);
@@ -113,12 +113,11 @@ std::optional<RPC::container> Messenger::getNextMessage() {
         perror("\n Error : read() failed to read 4-byte length \n");
         exit(EXIT_FAILURE);
     }
-
-    RPC::containerLength messageLen;
-    messageLen.ParseFromArray(lenBuf, sizeof(lenBuf));
+    len = ntohl(len); // convert from network to host order
+    printf("Incoming message is %d bytes", len);
 
     // read the rest of the message
-    char msgBuf [messageLen.length()];
+    char msgBuf [len];
     n = read(connfd, msgBuf, sizeof(msgBuf));
     if (n < 0) {
         perror("\n Error : read() failed \n");
@@ -130,6 +129,8 @@ std::optional<RPC::container> Messenger::getNextMessage() {
     }
 
     RPC::container message;
-    message.ParseFromArray(msgBuf, sizeof(msgBuf));
+    std::string data(msgBuf, sizeof(msgBuf));
+    //message.ParseFromArray(msgBuf, sizeof(msgBuf));
+    message.ParseFromString(data);
     return message;
 }
