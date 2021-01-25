@@ -1,12 +1,13 @@
 // TODO(ali): get protobufs to work
 #include <iostream>
 #include "RaftRPC.pb.h"
+#include "Server.h"
 
 int main() {
     GOOGLE_PROTOBUF_VERIFY_VERSION;
-    std::cout << "ali was here\n";
+    Server s;
 
-    RPC::AppendEntries test_msg;
+    s.run();
 
     return 0;
 }
