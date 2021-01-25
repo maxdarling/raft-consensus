@@ -27,7 +27,7 @@ Messenger::~Messenger() {
  * todo: consider a way around indefinite blocking like using 
  * a timeout or spawning a thread to send the message. 
  */
-void Messenger::sendMessage(const int serverId, const Message& message) {
+void Messenger::sendMessage(const int serverId, const RPC::container& message) {
 
 }
 
@@ -39,6 +39,6 @@ void Messenger::sendMessage(const int serverId, const Message& message) {
  * 
  * todo: add a blocking version, or make a flag available 
  */
-Message Messenger::getNextMessage() {
+RPC::container Messenger::getNextMessage() {
 
 }

@@ -1,7 +1,0 @@
-syntax = "proto3";
-
-package RPC;
-
-message AppendEntries {
-    string command = 1;
-}

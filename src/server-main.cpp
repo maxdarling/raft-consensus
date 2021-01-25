@@ -1,6 +1,6 @@
 // TODO(ali): get protobufs to work
 #include <iostream>
-#include "raft_RPCs.pb.h"
+#include "RaftRPC.pb.h"
 
 int main() {
     GOOGLE_PROTOBUF_VERIFY_VERSION;

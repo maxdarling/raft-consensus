@@ -1,5 +1,6 @@
 /* includes */
 #include "Networker.h"
+#include "RaftRPC.pb.h"
 
 /* All the information needed for one Messenger to talk to another */
 struct serverInfo {
@@ -11,9 +12,6 @@ const vector<serverInfo> SERVER_LIST {
     {}
 };
 
-class Message {
-    // todo: protobuf
-};
 
 /**
  * The Messenger class provides the abstraction of sending and receiving 
@@ -26,8 +24,8 @@ class Messenger {
     public: 
         Messenger(const int serverId, const vector<serverInfo>& serverList);
         ~Messenger();
-        void sendMessage(const int serverId, const Message& message);
-        Message getNextMessage();
+        void sendMessage(const int serverId, const RPC::container& message);
+        RPC::container getNextMessage();
 
     private:
         int _serverId; /* identifier for this server */
