@@ -189,24 +189,30 @@ Networker::~Networker() {
 
 
 /* Establishes a connection with a server at the specified address, and returns 
- * the associated file descriptor for communication. 
+ * the associated file descriptor for communication. If the connection fails, 
+ * returns -1. 
  * 
  * Note: if we already have made a connection with the server of interest (ie. 
  * we accept()'ed a connection from them already) then we will not create a new
- * socket connection, and instead recycle the old one. */
+ * socket connection, and instead recycle the old one. 
+ * 
+ * Todo: decide whether to throw exception or -1 or what. 
+ * */
 int Networker::establishConnection(const struct sockaddr_in& serv_addr) {
     int connfd;
     // create a connection if it doesn't already exist
     if (!_currConnections.count(serv_addr)) {
         if((connfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
         {
-            perror("\n Error : socket() failed \n");
-            exit(EXIT_FAILURE);
+            // perror("\n Error : socket() failed \n");
+            // exit(EXIT_FAILURE);
+            return -1;
         } 
         if(connect(connfd, (struct sockaddr *)&serv_addr, 
                    sizeof(serv_addr)) < 0) {
-            perror("\n Error : connect() failed \n");
-            exit(EXIT_FAILURE);
+            // perror("\n Error : connect() failed \n");
+            // exit(EXIT_FAILURE);
+            return -1;
         } 
 
         // save connection for future use
