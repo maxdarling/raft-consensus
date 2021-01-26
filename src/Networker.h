@@ -13,8 +13,7 @@
 using std::vector;
 using std::unordered_map;
 using std::map;
-using std::queue;
-
+using std::queue; 
 // todo: figure out how to hide this in the source somehow
 struct cmpByAddr {
     bool operator()(const struct sockaddr_in& a, const struct sockaddr_in& b) const {

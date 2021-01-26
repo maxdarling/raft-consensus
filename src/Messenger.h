@@ -10,9 +10,9 @@ struct serverInfo {
 
 /**
  * The Messenger class provides the abstraction of sending and receiving 
- * "messages" between servers.
+ * delimited messages between a pre-specified group of nodes.  
  * 
- * Protocol buffers are used as the "message" format.  
+ * Protocol buffers are used as the "message" format. (todo: generalize to str)
  */
 
 class Messenger {

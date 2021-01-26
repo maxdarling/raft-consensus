@@ -14,15 +14,9 @@ const int FIRST_SERVER_NUMBER = 1;
 const int LAST_SERVER_NUMBER = 2;
 
 
-// todo: instead of using a sleep-based approach to boot all the servers and 
-// connect them, we could use a count-based approach, in which the servers
-// would remain in that loop and continue to issue 'connect()' calls until 
-// all of them worked. 
-
 void NetworkerTester(int serverNumber) {
     int port = PORT_BASE + serverNumber; 
     Networker networker(port);
-    
     cout << "Server #" << serverNumber << " has started" << endl;
 
     // configure IP / port for remote connection
@@ -85,34 +79,47 @@ void MessengerTester(int serverNumber) {
     cout << "Server #" << serverNumber << " has started" << endl;
 
     // define the server list
-    int nServers = 2;
-    vector<serverInfo> serverList(nServers);
+    struct sockaddr_in addr;
+    memset(&addr, '0', sizeof(addr));
+    addr.sin_family = AF_INET; // use IPv4
+    addr.sin_addr.s_addr = INADDR_ANY; // use local IP
+    addr.sin_port = htons(PORT_BASE);
 
-    for (int i = 1; i <= serverList.size(); ++i) {
-        struct sockaddr_in addr;
-        memset(&addr, '0', sizeof(addr));
-        addr.sin_family = AF_INET; // use IPv4
-        addr.sin_addr.s_addr = INADDR_ANY; // use local IP
-        addr.sin_port = htons(PORT_BASE + i);
-        serverList.push_back(serverInfo{addr, i});
+    int nServers = 2;
+    vector<serverInfo> serverList {
+        {addr, 1}, 
+        {addr, 2}
+    };
+    for (serverInfo& elem : serverList) {
+        elem.addr.sin_port = htons(PORT_BASE + elem.serverId);
     }
+    // cout << p <<endl;
+    // vector<serverInfo> serverList;
+    // for (int i = 0; i < nServers; ++i) {
+    //     struct sockaddr_in addr;
+    //     memset(&addr, '0', sizeof(addr));
+    //     addr.sin_family = AF_INET; // use IPv4
+    //     addr.sin_addr.s_addr = INADDR_ANY; // use local IP
+    //     addr.sin_port = htons(PORT_BASE + i);
+    //     serverList.push_back(serverInfo{addr, i});
+    // }
 
     // start Messenger
     Messenger messenger(serverNumber, serverList);
-    
 
     // send messages
     int n_messages_sent = 0;
     while(true) {
         // pick a random server to send a message to
-        int peerServerNumber = 1 + (rand() % serverList.size());
+        int peerServerNumber; 
+        while ((peerServerNumber = 1 + (rand() % serverList.size())) == serverNumber);
         
         // construct a message
         std::string command = "Message #" + std::to_string(++n_messages_sent) + 
                               " from server #" + std::to_string(serverNumber);
+        cout << "pre-serialized message is of length " << command.length() << endl;
  
         RPC::container msgWrapper;
-        //msgWrapper.set_allocated_clientrequest_message(&msg); // why 'allocated'??
         msgWrapper.mutable_clientrequest_message()->set_command(command);
         
         // send the message
@@ -121,15 +128,15 @@ void MessengerTester(int serverNumber) {
        sleep(5);
 
         // check for received messages
-        // std::optional<RPC::container> incMsgWrapper = messenger.getNextMessage();
-        // if (incMsgWrapper) {
-        //     if (!(*incMsgWrapper).has_appendentries_message() && 
-        //         !(*incMsgWrapper).has_requestvote_message() && 
-        //         (*incMsgWrapper).has_clientrequest_message()) {
-        //         cout << "Message received:" << endl;
-        //         cout << (*incMsgWrapper).clientrequest_message().command() << endl; 
-        //     }
-        // }
+        std::optional<RPC::container> incMsgWrapper = messenger.getNextMessage();
+        if (incMsgWrapper) {
+            if (!(*incMsgWrapper).has_appendentries_message() && 
+                !(*incMsgWrapper).has_requestvote_message() && 
+                (*incMsgWrapper).has_clientrequest_message()) {
+                cout << "Message received:" << endl;
+                cout << (*incMsgWrapper).clientrequest_message().command() << endl; 
+            }
+        }
     }
 
 
@@ -142,5 +149,6 @@ int main(int argc, char* argv[])
     //NetworkerTester(serverNumber);
     MessengerTester(serverNumber);
 
+    cout << "Program End" << endl;
     return 0;
 }

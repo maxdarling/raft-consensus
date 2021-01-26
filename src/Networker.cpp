@@ -68,6 +68,14 @@ Assumptions:
     in the middle of sending message).
     -sendAll() is safe. is this untrue if we're writing to a connection to
     a server that's crashed? 
+
+Notes 1/26:
+-I've now realized that the peer data (not addr, but port) collected from a 
+call to accept() is different than the 5000 + x port that we expect. I think
+this is because connect() on their end opens a new port (diff from their 
+listening port on 5000 + x. Thus, we're just going to do 2 sockets / connection
+at this point. I don't think it's a huge deal. This means that the 
+_currConnections map checker is pretty much useless. 
 */
 
 #include "Networker.h"
@@ -89,6 +97,10 @@ Assumptions:
 
 #include <cassert>
 
+#include <iostream>
+using std::cout;
+using std::endl;
+
 /* a limit argument for listen() */
 const short MAX_BACKLOG_CONNECTIONS = 10;
 
@@ -97,13 +109,17 @@ const short MAX_BACKLOG_CONNECTIONS = 10;
  *
  */
 void Networker::listener_routine() {
+    cout << "started listener routine" << endl;
     while(true) {
         // accept new connection and store client information in 'serv_addr'
         struct sockaddr_in serv_addr;
         memset(&serv_addr, '0', sizeof(serv_addr));
         socklen_t addrlen = sizeof(serv_addr); 
         int connfd = accept(_listenfd, (struct sockaddr *)&serv_addr, &addrlen); 
-        
+        // note: the above addr will actually never be in the map. Even if we've
+        // establishConnection()'ed to the server, the server addr we get here
+        // is a totally different port, created when they call connect(). 
+
         // save this connection for future use
         std::lock_guard<std::mutex> lock(_m);
         if (_currConnections.count(serv_addr)) {
@@ -137,20 +153,11 @@ void Networker::listener_routine() {
  *
  */
 Networker::Networker(const short port) {
-    // initialize members
+    //initialize members
     memset(&_addr, '0', sizeof(_addr));
     _addr.sin_family = AF_INET; // use IPv4
     _addr.sin_addr.s_addr = INADDR_ANY; // use local IP
     _addr.sin_port = htons(port);
-
-    // todo: figure out if we can use this, instead of non-hidden header code
-    //auto cmp = [](const struct sockaddr_in& a, const struct sockaddr_in& b) {
-    //    if (a.sin_port != b.sin_port) {
-    //        return a.sin_port < b.sin_port;
-    //    }
-    //    return a.sin_addr.s_addr < b.sin_addr.s_addr;
-    //};
-    //_currConnections = map<sockaddr_in, int, decltype(cmp)>(cmp);
 
     _pfds_size = 0;
     _pfds_capacity = 10;
@@ -171,18 +178,15 @@ Networker::Networker(const short port) {
         perror("\n Error : listen() failed \n");
         exit(EXIT_FAILURE);
     }
-
-    // start listener thread in the background
-    std::thread th(&Networker::listener_routine, this); // never .join()'ed, as it loops forever
+    // start a listener thread in the background
+    std::thread th = std::thread(&Networker::listener_routine, this);
     th.detach();
-    //std::thread th(foo); // never .join()'ed, as it loops forever
-    //_th = std::thread(&Networker::listener_routine, this);
 }
 
 
 /* Cleans up resources on program exit. 
  * 
- * Note: there's nothing to do for the thread, since it loops forever. */
+ * Note: there's nothing to do for the listener, since it loops forever. */
 Networker::~Networker() {
     free(_pfds);
 }
@@ -202,6 +206,10 @@ int Networker::establishConnection(const struct sockaddr_in& serv_addr) {
     int connfd;
     // create a connection if it doesn't already exist
     if (!_currConnections.count(serv_addr)) {
+        // cout << "map contents are: " << endl;
+        // for (auto it = _currConnections.begin(); it != _currConnections.end(); ++it) {
+        //     cout << it->first.sin_port << ", " << it->second << endl;
+        // }
         if((connfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
         {
             // perror("\n Error : socket() failed \n");
@@ -232,7 +240,6 @@ int Networker::establishConnection(const struct sockaddr_in& serv_addr) {
             ++_pfds_size;
         }
     }
-
     return _currConnections[serv_addr];
 }
 
