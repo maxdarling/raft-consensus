@@ -19,8 +19,14 @@ using std::endl;
  * Blocking / non-Blocking Calls: 
  * -todo: determine which we aim to provide
  * 
- * Automatic connection maintenance, message dropping policy, exception handling:
- * -todo: decide what to do and where (networker / messenger) for the above 
+ * 
+ * 
+ * Todo:
+ * -change from protobuf API to string API
+ * -add background thread that listens for ready messages (start w/ hotloop)
+ * -define a special messenger-internal message protocol (likely <special_flag, serverId>) for crashed servers
+ * -change constructor to be based in terms of these messages (later: impose ordering for fun?)
+ *      -note: this will auto-fix a crashed server trying to reconnect since constructor.  
  */ 
 
 
@@ -83,20 +89,19 @@ Messenger::~Messenger() {
  * todo: consider a way around indefinite blocking like using 
  * a timeout or spawning a thread to send the message. 
  */
-void Messenger::sendMessage(const int serverId, const RPC::container& message) {
+void Messenger::sendMessage(const int serverId, const std::string& message) {
     assert(_serverIdToFd.count(serverId));
     // serialize message and its length
-    std::string messageBytes = message.SerializeAsString();
 
-    int len = messageBytes.length();
-    printf("Sending message of length %d, not to be confused with %d", len, htonl(len));
+    int len = message.length();
+    printf("Sending message of length %d, not to be confused with %d \n", len, htonl(len));
     len = htonl(len); // convert to network order before sending
 
     // send the message length, then the message itself
     int connfd = _serverIdToFd[serverId];
     _networker->sendAll(connfd, (char *)&len, sizeof(len)); 
     cout << "sent msg length" << endl;
-    _networker->sendAll(connfd, messageBytes.c_str(), messageBytes.length());
+    _networker->sendAll(connfd, message.c_str(), message.length());
     cout << "sent msg body" << endl;
 }
 
@@ -108,7 +113,7 @@ void Messenger::sendMessage(const int serverId, const RPC::container& message) {
  * 
  * todo: add a blocking version, or make a flag available 
  */
-std::optional<RPC::container> Messenger::getNextMessage() {
+std::optional<std::string> Messenger::getNextMessage() {
     int connfd;
     if ( (connfd = _networker->getNextReadableFd()) == -1) {
         return std::nullopt;
@@ -126,7 +131,7 @@ std::optional<RPC::container> Messenger::getNextMessage() {
         exit(EXIT_FAILURE);
     }
     len = ntohl(len); // convert back to host order before using 
-    printf("Incoming message is %d bytes", len);
+    printf("Incoming message is %d bytes \n", len);
 
     // read the rest of the message
     char msgBuf [len];
@@ -140,7 +145,6 @@ std::optional<RPC::container> Messenger::getNextMessage() {
         exit(EXIT_FAILURE);
     }
 
-    RPC::container message;
-    message.ParseFromArray(msgBuf, sizeof(msgBuf));
+    std::string message(msgBuf, sizeof(msgBuf));
     return message;
 }

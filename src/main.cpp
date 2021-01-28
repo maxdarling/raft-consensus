@@ -115,27 +115,20 @@ void MessengerTester(int serverNumber) {
         while ((peerServerNumber = 1 + (rand() % serverList.size())) == serverNumber);
         
         // construct a message
-        std::string command = "Message #" + std::to_string(++n_messages_sent) + 
+        std::string message = "Message #" + std::to_string(++n_messages_sent) + 
                               " from server #" + std::to_string(serverNumber);
-        cout << "pre-serialized message is of length " << command.length() << endl;
  
-        RPC::container msgWrapper;
-        msgWrapper.mutable_clientrequest_message()->set_command(command);
         
         // send the message
-        messenger.sendMessage(peerServerNumber, msgWrapper);
+        messenger.sendMessage(peerServerNumber, message);
 
        sleep(5);
 
         // check for received messages
-        std::optional<RPC::container> incMsgWrapper = messenger.getNextMessage();
+        std::optional<std::string> incMsgWrapper = messenger.getNextMessage();
         if (incMsgWrapper) {
-            if (!(*incMsgWrapper).has_appendentries_message() && 
-                !(*incMsgWrapper).has_requestvote_message() && 
-                (*incMsgWrapper).has_clientrequest_message()) {
-                cout << "Message received:" << endl;
-                cout << (*incMsgWrapper).clientrequest_message().command() << endl; 
-            }
+            cout << "Message received:" << endl;
+            cout << (*incMsgWrapper) << endl; 
         }
     }
 
@@ -144,7 +137,6 @@ void MessengerTester(int serverNumber) {
 
 int main(int argc, char* argv[])
 {
-    GOOGLE_PROTOBUF_VERIFY_VERSION;
     int serverNumber = std::stoi(argv[1]);
     //NetworkerTester(serverNumber);
     MessengerTester(serverNumber);

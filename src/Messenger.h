@@ -1,6 +1,5 @@
 /* includes */
 #include "Networker.h"
-#include "RaftRPC.pb.h"
 
 /* Bundles information for inter-Messenger communication */
 struct serverInfo {
@@ -19,8 +18,8 @@ class Messenger {
     public: 
         Messenger(const int serverId, const vector<serverInfo>& serverList);
         ~Messenger();
-        void sendMessage(const int serverId, const RPC::container& message);
-        std::optional<RPC::container> getNextMessage();
+        void sendMessage(const int serverId, const std::string& message);
+        std::optional<std::string> getNextMessage();
 
     private:
         int _serverId; /* identifier for this server */
