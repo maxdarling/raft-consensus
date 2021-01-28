@@ -108,7 +108,7 @@ const short MAX_BACKLOG_CONNECTIONS = 10;
 /* Background thread routine to establish incoming connection requeuests. 
  *
  */
-void Networker::listener_routine() {
+void Networker::listenerRoutine() {
     cout << "started listener routine" << endl;
     while(true) {
         // accept new connection and store client information in 'serv_addr'
@@ -179,7 +179,7 @@ Networker::Networker(const short port) {
         exit(EXIT_FAILURE);
     }
     // start a listener thread in the background
-    std::thread th = std::thread(&Networker::listener_routine, this);
+    std::thread th = std::thread(&Networker::listenerRoutine, this);
     th.detach();
 }
 

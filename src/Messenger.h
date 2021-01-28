@@ -16,15 +16,21 @@ struct serverInfo {
 
 class Messenger {
     public: 
-        Messenger(const int serverId, const vector<serverInfo>& serverList);
+        Messenger(const int serverId, const unordered_map<int, struct sockaddr_in>& serverList);
         ~Messenger();
         void sendMessage(const int serverId, const std::string& message);
         std::optional<std::string> getNextMessage();
 
     private:
+        void collectMessagesRoutine();
+
         int _serverId; /* identifier for this server */
         Networker* _networker; /* manage network-level communications */
 
-        unordered_map<int, int> _serverIdToFd; /* bookkeep connections */
+        std::mutex _m;
 
+        unordered_map<int, int> _serverIdToFd; /* bookkeep connections */
+        unordered_map<int, struct sockaddr_in> _serverIdToAddr;
+
+        queue<std::string> _messageQueue; /* store collected messages */
 };

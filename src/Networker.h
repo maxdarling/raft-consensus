@@ -35,8 +35,8 @@ class Networker {
         int getNextReadableFd();
 
     private:
-        void listener_routine();
-        void poller_routine(); // not yet implemented. no need? 
+        void listenerRoutine();
+        void pollerRoutine(); // not yet implemented. no need? 
 
         int _listenfd;
         struct sockaddr_in _addr;

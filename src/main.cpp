@@ -86,12 +86,14 @@ void MessengerTester(int serverNumber) {
     addr.sin_port = htons(PORT_BASE);
 
     int nServers = 2;
-    vector<serverInfo> serverList {
-        {addr, 1}, 
-        {addr, 2}
+    // explicit initialization because loop version is less easy to visualize
+    unordered_map<int, struct sockaddr_in> serverList {
+        {1, addr},
+        {2, addr}
     };
-    for (serverInfo& elem : serverList) {
-        elem.addr.sin_port = htons(PORT_BASE + elem.serverId);
+    for (auto it = serverList.begin(); it != serverList.end(); ++it) {
+        it->second.sin_port = htons(PORT_BASE + it->first);
+        cout << "created server list entry. ID = "<< it->first << ",  port = " << it->second.sin_port << endl;
     }
     // cout << p <<endl;
     // vector<serverInfo> serverList;

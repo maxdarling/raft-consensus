@@ -7,6 +7,7 @@
 using std::cout;
 using std::endl;
 
+const static int SHADOW_MESSAGE_ID = -190;
 
 /** 
  * ~ Implementation Notes ~
@@ -22,14 +23,98 @@ using std::endl;
  * 
  * 
  * Todo:
- * -change from protobuf API to string API
  * -add background thread that listens for ready messages (start w/ hotloop)
  * -define a special messenger-internal message protocol (likely <special_flag, serverId>) for crashed servers
  * -change constructor to be based in terms of these messages (later: impose ordering for fun?)
  *      -note: this will auto-fix a crashed server trying to reconnect since constructor.  
+ * -improve naming scheme (connfd from 'getNextReadableFd' is bad, perhaps. only from 'establishConnection'?)
+ * -see if we don't have to convert serverList ports to network order before passing into messenger
+ *  -> to do so, gotta change networker estConn() and constructor, perhaps
  */ 
 
 
+/** 
+ * Background thread routine that will await incoming messages and process
+ * them. Shadow messages will be prompt a network connection attempt, while
+ * client messages will be added to the message queue. 
+ *
+ */
+void Messenger::collectMessagesRoutine() {
+    while(true) {
+        int connfd;
+        while ( (connfd = _networker->getNextReadableFd()) == -1) { // todo: make blocking
+            // keep waiting until we can read a new message
+        }
+
+        // read the message length first
+        int len;
+        int n = read(connfd, &len, sizeof(len));
+        if (n < 0) {
+            perror("\n Error : read() failed \n");
+            exit(EXIT_FAILURE);
+        }
+        if (n == 0) {
+            cout << "a peer closed a connection" << endl;
+            close(connfd);
+            continue;
+        }
+        if (n < 4) {
+            perror("\n Error : read() failed to read 4-byte length \n");
+            exit(EXIT_FAILURE);
+        }
+        len = ntohl(len); // convert back to host order before using 
+        printf("Incoming message is %d bytes \n", len);
+
+        // check for shadow message
+        if (len == SHADOW_MESSAGE_ID) {
+            // next 4 bytes indicates the serverId we should connect to   
+            int peerServerId;
+            n = read(connfd, &peerServerId, sizeof(peerServerId));
+            if (n < 0) {
+                perror("\n Error : read() failed \n");
+                exit(EXIT_FAILURE);
+            }
+            if (n == 0) {
+                cout << "a peer closed a connection" << endl;
+                close(connfd);
+                continue;
+            }
+            if (n < 4) {
+                perror("\n Error : read() failed to read 4-byte length \n");
+                exit(EXIT_FAILURE);
+            }
+            peerServerId = ntohl(peerServerId);
+            printf("Messenger conn request from server %d \n", peerServerId);
+            // todo: decompose this as a 'connectToMessenger()'? repeated in constructor... 
+            int sockfd = 
+                _networker->establishConnection(_serverIdToAddr[peerServerId]);
+            _serverIdToFd[peerServerId] = sockfd;
+        }
+        // not a shadow message, but peer message
+        else {
+            // read the rest of the message
+            char msgBuf [len];
+            n = read(connfd, msgBuf, sizeof(msgBuf));
+            if (n < 0) {
+                perror("\n Error : read() failed \n");
+                exit(EXIT_FAILURE);
+            }
+            if (n == 0) {
+                cout << "a peer closed a connection" << endl;
+                close(connfd);
+                continue;
+            }
+            if (n < len) {
+                perror("\n Error : read() failed to read entire message at once \n"); // todo: fix
+                exit(EXIT_FAILURE);
+            }
+
+            std::lock_guard<std::mutex> lock(_m);
+            std::string message(msgBuf, sizeof(msgBuf));
+            _messageQueue.push(message);
+        }
+    }
+}
 
 
 /**
@@ -37,29 +122,28 @@ using std::endl;
  * 
  * Todo: make connecting robust 
  */
-Messenger::Messenger(const int serverId, const vector<serverInfo>& serverList) {
+Messenger::Messenger(const int serverId, const unordered_map<int, struct sockaddr_in>& serverList) {
     _serverId = serverId;
-
-    // find ourselves in the list, initialize networker
-    int port;
-    for (const serverInfo& elem : serverList) {
-        if (elem.serverId == _serverId) {
-            port = ntohs(elem.addr.sin_port);
-        }
-    }
+    _serverIdToAddr = serverList;
+    // start a networker on our assigned port
+    int port = ntohs(_serverIdToAddr[_serverId].sin_port);
     _networker = new Networker(port);
+
+    // start message collection background thread
+    std::thread th(&Messenger::collectMessagesRoutine, this);
+    th.detach();
 
     cout << "Begin server connection loop inside Messenger" << endl;
     // connect to other servers
-    for (const serverInfo& elem : serverList) {
-        if (elem.serverId != _serverId) {
+    for (const auto& [peerId, peerAddr] : serverList) {
+        if (peerId != _serverId) {
             int connfd;
-            while( (connfd = _networker->establishConnection(elem.addr)) == -1) {
-                //cout << "connection to " << elem.addr.sin_port << " failed. " << endl;
+            while( (connfd = _networker->establishConnection(peerAddr)) == -1) {
+                cout << "failed to connect to peer messenger #" << peerId << endl;
                 sleep(3);
             }
-            //cout << "connection to " << elem.addr.sin_port << " succeeded!" << endl;
-            _serverIdToFd[elem.serverId] = connfd;
+            cout << "successfully connected to peer messenger #" << peerId << endl;
+            _serverIdToFd[peerId] = connfd;
             sleep(5);
         }
     }
@@ -69,7 +153,7 @@ Messenger::Messenger(const int serverId, const vector<serverInfo>& serverList) {
     }
     sleep(5);
     // wait till all connections have been made 
-    // note: the above is not guaranteed to work, it's just likely to...
+    // note: the timer approach is not guaranteed to work, but likely to...
     cout << "Outbound connections completed on server " << _serverId << endl;
 }
 
@@ -107,44 +191,53 @@ void Messenger::sendMessage(const int serverId, const std::string& message) {
 
 
 /** 
- * Return a message if one is available. If not, return blank. // todo: better -1 return
+ * Return a message if one is available. If not, return blank.
  * 
  * This method does not block, and therefore is suitable for use in a hot-loop.
  * 
  * todo: add a blocking version, or make a flag available 
  */
 std::optional<std::string> Messenger::getNextMessage() {
-    int connfd;
-    if ( (connfd = _networker->getNextReadableFd()) == -1) {
+    // check the message queue 
+    std::lock_guard<std::mutex> lock(_m);
+    if (_messageQueue.empty()) {
         return std::nullopt;
     }
-
-    // read the message bytes first
-    int len;
-    int n = read(connfd, &len, sizeof(len));
-    if (n < 0) {
-        perror("\n Error : read() failed \n");
-        exit(EXIT_FAILURE);
-    }
-    if (n < 4) {
-        perror("\n Error : read() failed to read 4-byte length \n");
-        exit(EXIT_FAILURE);
-    }
-    len = ntohl(len); // convert back to host order before using 
-    printf("Incoming message is %d bytes \n", len);
-
-    // read the rest of the message
-    char msgBuf [len];
-    n = read(connfd, msgBuf, sizeof(msgBuf));
-    if (n < 0) {
-        perror("\n Error : read() failed \n");
-        exit(EXIT_FAILURE);
-    }
-    if (n < len) {
-        perror("\n Error : read() failed to read entire message at once \n"); // todo: fix
-        exit(EXIT_FAILURE);
-    }
-
-    std::string message(msgBuf, sizeof(msgBuf));
+    std::string message = _messageQueue.front();
+    _messageQueue.pop();
     return message;
+
+    // int connfd;
+    // if ( (connfd = _networker->getNextReadableFd()) == -1) {
+    //     return std::nullopt;
+    // }
+
+    // // read the message bytes first
+    // int len;
+    // int n = read(connfd, &len, sizeof(len));
+    // if (n < 0) {
+    //     perror("\n Error : read() failed \n");
+    //     exit(EXIT_FAILURE);
+    // }
+    // if (n < 4) {
+    //     perror("\n Error : read() failed to read 4-byte length \n");
+    //     exit(EXIT_FAILURE);
+    // }
+    // len = ntohl(len); // convert back to host order before using 
+    // printf("Incoming message is %d bytes \n", len);
+
+    // // read the rest of the message
+    // char msgBuf [len];
+    // n = read(connfd, msgBuf, sizeof(msgBuf));
+    // if (n < 0) {
+    //     perror("\n Error : read() failed \n");
+    //     exit(EXIT_FAILURE);
+    // }
+    // if (n < len) {
+    //     perror("\n Error : read() failed to read entire message at once \n"); // todo: fix
+    //     exit(EXIT_FAILURE);
+    // }
+
+    // std::string message(msgBuf, sizeof(msgBuf));
+    // return message;
 }
