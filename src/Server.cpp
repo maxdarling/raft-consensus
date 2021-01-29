@@ -1,20 +1,56 @@
 #include "Server.h"
 #include <iostream>
+#include <random>    // for random_device
+#include <cstdlib>   // for rand()
+
+// in milliseconds
+const int ELECTION_TIMEOUT_LOWER_BOUND = 5000;
+const int ELECTION_TIMEOUT_UPPER_BOUND = 10000;
+const int HEARTBEAT_TIMEOUT = 2500;
+
+Timer::Timer(int duration_ms) : _timer_duration(duration_ms) {}
+Timer::Timer(int duration_ms_lower_bound, int duration_ms_upper_bound) 
+    : _lower_bound(duration_ms_lower_bound), _upper_bound(duration_ms_upper_bound) {
+    // TODO(ali): better RNG?
+    std::random_device rd;
+    srand(rd());
+}
+
+void Timer::start() {
+    _start_time = std::chrono::steady_clock::now();
+    if (_lower_bound) {
+        _timer_duration = std::chrono::milliseconds {
+            rand() % (*_upper_bound - *_lower_bound + 1) + *_lower_bound
+        };
+    }
+}
+
+bool Timer::is_expired() {
+    if (!_start_time) return false;
+    if (std::chrono::steady_clock::now() - *_start_time >= _timer_duration) {
+        _start_time.reset();
+        return true;
+    } return false;
+}
 
 // Constructor
-Server::Server() : _messenger(1, {}) {}
+Server::Server(const int server_id, const unordered_map<int, struct sockaddr_in>& cluster_info) 
+    : _messenger(server_id, cluster_info), 
+      _election_timer(ELECTION_TIMEOUT_LOWER_BOUND, ELECTION_TIMEOUT_UPPER_BOUND), 
+      _heartbeat_timer(HEARTBEAT_TIMEOUT),
+      _server_id(server_id) {}
 
 // Start the server, so that it may respond to requests from clients and other
 // servers.
 void Server::run() {
-    // start election timer
+    _election_timer.start();
 
-    // for (;;) {
-        // if !leader & election timer has expire, run try_election() until it returns true
+    for (;;) {
+        if (!_leader && _election_timer.is_expired()) while (!try_election());
         // if (_leader) leader_tasks();
         // std::optional<RPC::container> msg_option = _messenger.getNextMessage();
         // if (msg_option) RPC_handler(*msg_option);
-    // }
+    }
 }
 
 // Update persistent state variables on disk and route RPCs to the correct 
@@ -69,9 +105,11 @@ void Server::handler_ClientCommand() {
 // Trigger an election by sending RequestVote RPCs to all other servers.
 // RETURN: true if a new leader is elected, false otherwise
 bool Server::try_election() {
+    std::cout << "Server " << _server_id << " starting election\n";
     ++_current_term;
     int votes = 1; // vote for self
-    // reset election timer
+    
+    _election_timer.start();
     // send RequestVote RPC to all other servers
     // for (;;) {
         // if (election timer has expired) return false;

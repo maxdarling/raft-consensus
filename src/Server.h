@@ -1,10 +1,27 @@
 #include <optional>
 #include <vector>
+#include <chrono>
 #include "Messenger.h"
+
+class Timer {
+  public:
+    Timer(int duration_ms);
+    Timer(int duration_ms_lower_bound, int duration_ms_upper_bound);
+    void start();
+    bool is_expired();
+    
+  private:
+    std::optional<std::chrono::time_point<std::chrono::steady_clock>> _start_time;
+    std::chrono::milliseconds _timer_duration;
+    
+    // FOR USE IN RANDOM TIMER
+    std::optional<int> _lower_bound;
+    std::optional<int> _upper_bound;    
+};
 
 class Server {
   public:
-    Server();
+    Server(const int server_id, const unordered_map<int, struct sockaddr_in>& cluster_list);
     void run();
 
   private:
@@ -26,6 +43,11 @@ class Server {
 
     // UTIL
     Messenger _messenger;
+    Timer _election_timer;
+    Timer _heartbeat_timer;
+
+    // FOR DEBUGGING/LOGGING
+    int _server_id;
 
     void RPC_handler();
     void leader_tasks();
