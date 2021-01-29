@@ -33,7 +33,7 @@ class Networker {
         int establishConnection(const struct sockaddr_in& serv_addr);
         int sendAll(const int connfd, const void* message, int length); 
         int readAll(const int connfd, void* buf, int bytesToRead);
-        int getNextReadableFd(bool shouldBlock = false);
+        int getNextReadableFd(bool shouldBlock);
 
     private:
         void listenerRoutine();
