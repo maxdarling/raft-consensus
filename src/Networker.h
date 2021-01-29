@@ -31,7 +31,8 @@ class Networker {
         ~Networker();
 
         int establishConnection(const struct sockaddr_in& serv_addr);
-        void sendAll(const int connfd, const char* message, int length); 
+        int sendAll(const int connfd, const void* message, int length); 
+        int readAll(const int connfd, void* buf, int bytesToRead);
         int getNextReadableFd();
 
     private:
