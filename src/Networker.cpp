@@ -109,7 +109,6 @@ const short MAX_BACKLOG_CONNECTIONS = 10;
  *
  */
 void Networker::listenerRoutine() {
-    cout << "started listener routine" << endl;
     while(true) {
         // accept new connection and store client information in 'serv_addr'
         struct sockaddr_in serv_addr;
@@ -301,21 +300,29 @@ int Networker::readAll(const int connfd, void* buf, int bytesToRead) {
  * 
  * Note: this method can also be implemented with a supplemental background
  * thread whose job is to call poll() in the background, but using a 
- * non-blocking poll() call here seemed simpler, if less efficient. */
+ * non-blocking poll() call here seemed simpler, if less efficient. 
+ *
+ */
 int Networker::getNextReadableFd(bool shouldBlock) {
     // if no readable fds left, check for more with poll() 
     if (_readableFds.size() == 0) {
-        std::lock_guard<std::mutex> lock(_m);
         int timeout; // (ms)
         if (shouldBlock) {
             timeout = 100; // must still use finite timeout to let pfds expand
-            while ((poll(_pfds, _pfds_size, timeout)) <= 0);
+            while (true) {
+                std::lock_guard<std::mutex> lock(_m);
+                if (poll(_pfds, _pfds_size, timeout) > 0) {
+                    break;
+                }
+            }
         } else {
+            std::lock_guard<std::mutex> lock(_m);
             timeout = 0;
             if (poll(_pfds, _pfds_size, timeout) == 0) {
                 return -1;
             }
         }
+        std::lock_guard<std::mutex> lock(_m);
         for (int i = 0; i < _pfds_size; ++i) {
             if (_pfds[i].revents & POLLIN) {
                 _readableFds.push(_pfds[i].fd);
