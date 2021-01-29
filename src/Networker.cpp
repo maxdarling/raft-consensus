@@ -116,6 +116,9 @@ void Networker::listenerRoutine() {
         memset(&serv_addr, '0', sizeof(serv_addr));
         socklen_t addrlen = sizeof(serv_addr); 
         int connfd = accept(_listenfd, (struct sockaddr *)&serv_addr, &addrlen); 
+        // cout << "accepted connection port in listener: " << serv_addr.sin_port << 
+        // " or " << htons(serv_addr.sin_port) << " or " << ntohs(serv_addr.sin_port) 
+        // << " or " << htonl(serv_addr.sin_port) << " or " << ntohl(serv_addr.sin_port) << endl;
         // note: the above addr will actually never be in the map. Even if we've
         // establishConnection()'ed to the server, the server addr we get here
         // is a totally different port, created when they call connect(). 
@@ -244,24 +247,50 @@ int Networker::establishConnection(const struct sockaddr_in& serv_addr) {
 }
 
 
-/* Send all bytes to a connection with the specified file descriptor.  
+/** 
+ * Send all bytes to a connection with the specified file descriptor.  
  *
  * If a connection associated with the provided file descriptor doesn't exist, 
  * the behavior is undefined (write to an unknown fd).  
  * 
- * Note: method is 'void' over 'bool' because we'd rather crash in the rare
- * failure case than make the caller check the validity of each call. */
-void Networker::sendAll(const int connfd, const char* buf, const int length) { 
+ */
+int Networker::sendAll(const int connfd, const void* buf, const int length) { 
     // write the entire buffer's contents
-    int bytes_written = 0;
-    while (bytes_written < length) {
-        int n = send(connfd, buf + bytes_written, length - bytes_written, 0);
+    int bytesWritten = 0;
+    while (bytesWritten < length) {
+        // flag: disable error signal handler for this call. 
+        int n = send(connfd, (char *)buf + bytesWritten, length - bytesWritten, MSG_NOSIGNAL);
         if (n < 0) {
-            perror("\n Error : write() failed \n");
-            exit(EXIT_FAILURE);
+            // perror("\n Error : write() failed \n");
+            // exit(EXIT_FAILURE);
+            return bytesWritten; 
         }
-        bytes_written += n;
+        bytesWritten += n;
     }
+    return bytesWritten;
+}
+
+
+/** 
+ * Read 'bytesToRead' bytes from specified socket descriptor. Returns the 
+ * number of bytes read, or -1 if there was an error.  
+ * 
+ * If the peer closed the connection or an error ocurred while reading, 
+ * the socket will be closed.
+ * 
+ */
+int Networker::readAll(const int connfd, void* buf, int bytesToRead) {
+    int bytesRead = 0;
+    while (bytesRead < bytesToRead) {
+        int n = recv(connfd, (char *)buf + bytesRead, bytesToRead - bytesRead, MSG_NOSIGNAL);
+        // orderly shutdown, or an error ocurred
+        if (n == 0 || n < 0) {
+            close(connfd);
+            return -1; 
+        }
+        bytesRead += n;
+    }
+    return bytesRead;
 }
 
 
@@ -273,13 +302,19 @@ void Networker::sendAll(const int connfd, const char* buf, const int length) {
  * Note: this method can also be implemented with a supplemental background
  * thread whose job is to call poll() in the background, but using a 
  * non-blocking poll() call here seemed simpler, if less efficient. */
-int Networker::getNextReadableFd() {
+int Networker::getNextReadableFd(bool shouldBlock) {
     // if no readable fds left, check for more with poll() 
     if (_readableFds.size() == 0) {
         std::lock_guard<std::mutex> lock(_m);
-        int n_ready = poll(_pfds, _pfds_size, 0); // '0' -> non-blocking
-        if (n_ready == 0) {
-            return -1;
+        int timeout; // (ms)
+        if (shouldBlock) {
+            timeout = 100; // must still use finite timeout to let pfds expand
+            while ((poll(_pfds, _pfds_size, timeout)) <= 0);
+        } else {
+            timeout = 0;
+            if (poll(_pfds, _pfds_size, timeout) == 0) {
+                return -1;
+            }
         }
         for (int i = 0; i < _pfds_size; ++i) {
             if (_pfds[i].revents & POLLIN) {
@@ -288,7 +323,7 @@ int Networker::getNextReadableFd() {
         }
     }
 
-    int result_fd= _readableFds.front();
+    int result_fd = _readableFds.front();
     _readableFds.pop();
     return result_fd;
 }

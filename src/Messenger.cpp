@@ -23,10 +23,11 @@ const static int SHADOW_MESSAGE_ID = -190;
  * 
  * 
  * Todo:
- * -add background thread that listens for ready messages (start w/ hotloop)
  * -define a special messenger-internal message protocol (likely <special_flag, serverId>) for crashed servers
  * -change constructor to be based in terms of these messages (later: impose ordering for fun?)
  *      -note: this will auto-fix a crashed server trying to reconnect since constructor.  
+ * -add documentation in header file about shadow messages, background thread
+ * -properly handle errors (failed writes, reads. close sockets, close conns? (or just ignore :) ))
  * -improve naming scheme (connfd from 'getNextReadableFd' is bad, perhaps. only from 'establishConnection'?)
  * -see if we don't have to convert serverList ports to network order before passing into messenger
  *  -> to do so, gotta change networker estConn() and constructor, perhaps
@@ -45,68 +46,48 @@ void Messenger::collectMessagesRoutine() {
         while ( (connfd = _networker->getNextReadableFd()) == -1) { // todo: make blocking
             // keep waiting until we can read a new message
         }
+        connfd = _networker->getNextReadableFd(true);
 
         // read the message length first
         int len;
-        int n = read(connfd, &len, sizeof(len));
-        if (n < 0) {
-            perror("\n Error : read() failed \n");
-            exit(EXIT_FAILURE);
-        }
-        if (n == 0) {
-            cout << "a peer closed a connection" << endl;
-            close(connfd);
+        int n = _networker->readAll(connfd, &len, sizeof(len));
+        if (n < sizeof(len)) {
+            // perror("\n Error : read() failed to read 4-byte length \n");
+            // exit(EXIT_FAILURE);
             continue;
-        }
-        if (n < 4) {
-            perror("\n Error : read() failed to read 4-byte length \n");
-            exit(EXIT_FAILURE);
         }
         len = ntohl(len); // convert back to host order before using 
         printf("Incoming message is %d bytes \n", len);
 
         // check for shadow message
         if (len == SHADOW_MESSAGE_ID) {
-            // next 4 bytes indicates the serverId we should connect to   
+            // protocol: read the peer's 4-byte ID 
             int peerServerId;
-            n = read(connfd, &peerServerId, sizeof(peerServerId));
-            if (n < 0) {
-                perror("\n Error : read() failed \n");
-                exit(EXIT_FAILURE);
-            }
-            if (n == 0) {
-                cout << "a peer closed a connection" << endl;
-                close(connfd);
+            n = _networker->readAll(connfd, &peerServerId, sizeof(peerServerId));
+            if (n < sizeof(peerServerId)) {
+                // perror("\n Error : read() failed to read 4-byte length \n");
+                // exit(EXIT_FAILURE);
                 continue;
-            }
-            if (n < 4) {
-                perror("\n Error : read() failed to read 4-byte length \n");
-                exit(EXIT_FAILURE);
             }
             peerServerId = ntohl(peerServerId);
             printf("Messenger conn request from server %d \n", peerServerId);
-            // todo: decompose this as a 'connectToMessenger()'? repeated in constructor... 
-            int sockfd = 
+
+            // update the connection to the peer 
+            if (_serverIdToFd.count(peerServerId)) {
+                close(_serverIdToFd[peerServerId]);
+            }
+            _serverIdToFd[peerServerId] =
                 _networker->establishConnection(_serverIdToAddr[peerServerId]);
-            _serverIdToFd[peerServerId] = sockfd;
         }
-        // not a shadow message, but peer message
+        // not a shadow message, but a peer message
         else {
             // read the rest of the message
             char msgBuf [len];
-            n = read(connfd, msgBuf, sizeof(msgBuf));
-            if (n < 0) {
-                perror("\n Error : read() failed \n");
-                exit(EXIT_FAILURE);
-            }
-            if (n == 0) {
-                cout << "a peer closed a connection" << endl;
-                close(connfd);
-                continue;
-            }
+            n = _networker->readAll(connfd, msgBuf, sizeof(msgBuf));
             if (n < len) {
-                perror("\n Error : read() failed to read entire message at once \n"); // todo: fix
-                exit(EXIT_FAILURE);
+                // perror("\n Error : read() failed to read entire message at once \n"); // todo: fix
+                // exit(EXIT_FAILURE);
+                continue;
             }
 
             std::lock_guard<std::mutex> lock(_m);
@@ -175,15 +156,15 @@ Messenger::~Messenger() {
  */
 void Messenger::sendMessage(const int serverId, const std::string& message) {
     assert(_serverIdToFd.count(serverId));
-    // serialize message and its length
 
+    // serialize message and its length
     int len = message.length();
     printf("Sending message of length %d, not to be confused with %d \n", len, htonl(len));
     len = htonl(len); // convert to network order before sending
 
     // send the message length, then the message itself
     int connfd = _serverIdToFd[serverId];
-    _networker->sendAll(connfd, (char *)&len, sizeof(len)); 
+    _networker->sendAll(connfd, &len, sizeof(len)); // todo: catch return value
     cout << "sent msg length" << endl;
     _networker->sendAll(connfd, message.c_str(), message.length());
     cout << "sent msg body" << endl;
@@ -206,38 +187,4 @@ std::optional<std::string> Messenger::getNextMessage() {
     std::string message = _messageQueue.front();
     _messageQueue.pop();
     return message;
-
-    // int connfd;
-    // if ( (connfd = _networker->getNextReadableFd()) == -1) {
-    //     return std::nullopt;
-    // }
-
-    // // read the message bytes first
-    // int len;
-    // int n = read(connfd, &len, sizeof(len));
-    // if (n < 0) {
-    //     perror("\n Error : read() failed \n");
-    //     exit(EXIT_FAILURE);
-    // }
-    // if (n < 4) {
-    //     perror("\n Error : read() failed to read 4-byte length \n");
-    //     exit(EXIT_FAILURE);
-    // }
-    // len = ntohl(len); // convert back to host order before using 
-    // printf("Incoming message is %d bytes \n", len);
-
-    // // read the rest of the message
-    // char msgBuf [len];
-    // n = read(connfd, msgBuf, sizeof(msgBuf));
-    // if (n < 0) {
-    //     perror("\n Error : read() failed \n");
-    //     exit(EXIT_FAILURE);
-    // }
-    // if (n < len) {
-    //     perror("\n Error : read() failed to read entire message at once \n"); // todo: fix
-    //     exit(EXIT_FAILURE);
-    // }
-
-    // std::string message(msgBuf, sizeof(msgBuf));
-    // return message;
 }
