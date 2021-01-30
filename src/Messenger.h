@@ -17,6 +17,8 @@ class Messenger {
 
     private:
         void collectMessagesRoutine();
+        void _sendMessage(const int serverId, std::string message, bool isShadow);
+
 
         int _serverId; /* identifier for this server */
         Networker* _networker; /* manage network-level communications */

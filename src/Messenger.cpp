@@ -52,6 +52,7 @@ void Messenger::collectMessagesRoutine() {
         int len;
         int n = _networker->readAll(connfd, &len, sizeof(len));
         if (n != sizeof(len)) {
+            cout << "readAll failed, so we're aborting this message" << endl;
             continue;
         }
         len = ntohl(len); // convert back to host order before using 
@@ -59,14 +60,16 @@ void Messenger::collectMessagesRoutine() {
 
         // check for shadow message
         if (len == SHADOW_MESSAGE_ID) {
+            cout << "enter shadow message read handler" << endl;
             // protocol: read the peer's 4-byte ID 
             int peerServerId;
             n = _networker->readAll(connfd, &peerServerId, sizeof(peerServerId));
             if (n != sizeof(peerServerId)) {
+                cout << "readAll failed, so we're aborting this message" << endl;
                 continue;
             }
             peerServerId = ntohl(peerServerId);
-            printf("Messenger conn request from server %d \n", peerServerId);
+            cout << "received shadow message from server " << peerServerId << endl;
 
             // update the outbound connection to the peer 
             if (_serverIdToFd.count(peerServerId)) {
@@ -74,6 +77,7 @@ void Messenger::collectMessagesRoutine() {
             }
             _serverIdToFd[peerServerId] =
                 _networker->establishConnection(_serverIdToAddr[peerServerId]);
+            cout << "successful shadow connection to server " << peerServerId << endl;
         }
         // not a shadow message, but a peer message
         else {
@@ -81,6 +85,7 @@ void Messenger::collectMessagesRoutine() {
             char msgBuf [len];
             n = _networker->readAll(connfd, msgBuf, sizeof(msgBuf));
             if (n != len) {
+                cout << "readAll failed, so we're aborting this message" << endl;
                 continue;
             }
 
@@ -114,11 +119,16 @@ Messenger::Messenger(const int serverId, const unordered_map<int, struct sockadd
         if (peerId != _serverId) {
             int connfd;
             while( (connfd = _networker->establishConnection(peerAddr)) == -1) {
-                cout << "failed to connect to peer messenger #" << peerId << endl;
+                cout << "failed to connect to server #" << peerId << endl;
                 sleep(3);
             }
-            cout << "successfully connected to peer messenger #" << peerId << endl;
+            cout << "successfully connected to server #" << peerId << endl;
             _serverIdToFd[peerId] = connfd;
+            int msg = htonl(_serverId); // shadow message: tell peerd w/ peerId to connect to us at _serverId
+            char buf [4];
+            memcpy(buf, &msg, sizeof(msg));
+            _sendMessage(peerId, std::string(buf, sizeof(buf)), true);
+            cout << "sent shadow message to server #" << peerId << endl;
             sleep(5);
         }
     }
@@ -127,7 +137,7 @@ Messenger::Messenger(const int serverId, const unordered_map<int, struct sockadd
         cout << it->first<< ", " << it->second << endl;
     }
     sleep(5);
-    // wait till all connections have been made 
+    // wait till all connections have are made (before client may send/receive)
     // note: the timer approach is not guaranteed to work, but likely to...
     cout << "Outbound connections completed on server " << _serverId << endl;
 }
@@ -137,27 +147,22 @@ Messenger::Messenger(const int serverId, const unordered_map<int, struct sockadd
  * Class destructor. 
  */
 Messenger::~Messenger() {
-   cout << "REACHED MESSENGER DESTRUCTOR" << endl; 
+    free(_networker);
 }
 
 /**
  * Send a message to the specified server. 
  * 
- * This method blocks until the entire message has been sent. 
- * 
- * If an error occurred while sending the message, the function simply returns.
- * 
- * todo: make sure that we're okay with letting error happen silently. 
+ * Errors and closed connections are dealt with automatically.  
  */
-void Messenger::sendMessage(const int serverId, std::string message) {
+void Messenger::_sendMessage(const int serverId, std::string message, bool isShadow) {
     if (!_serverIdToFd.count(serverId)) {
-        cout << "sendMessage(): server#" << serverId << "is bogus, or we closed it" << endl;
+        cout << "sendMessage(): server#" << serverId << " is bogus, or we closed it" << endl;
         return;
     }
-
     // serialize message and its length
-    int len = message.length();
-    printf("Sending message of length %d, not to be confused with %d \n", len, htonl(len));
+    int len = (isShadow) ? SHADOW_MESSAGE_ID : message.length();
+    cout << "sending message of length " << len << endl;
     len = htonl(len); // convert to network order before sending
 
     // send the message length, then the message itself
@@ -169,7 +174,6 @@ void Messenger::sendMessage(const int serverId, std::string message) {
         _serverIdToFd.erase(serverId);
         return;
     }
-    //cout << "sent msg length" << endl;
     n = _networker->sendAll(connfd, message.c_str(), message.length());
     if (n != message.length()) {
         cout << "sendMessage failed, closing conn to server#" << serverId << endl;
@@ -177,8 +181,17 @@ void Messenger::sendMessage(const int serverId, std::string message) {
         _serverIdToFd.erase(serverId);
         return;
     }
-    //cout << "sent msg body" << endl;
 }
+
+/**
+ * public message sending API. 
+ * 
+ * See '_sendMessage()' above for details. 
+ */
+void Messenger::sendMessage(const int serverId, std::string message) {
+    _sendMessage(serverId, message, false);
+}
+
 
 
 /** 

@@ -107,8 +107,8 @@ void MessengerTester(int serverNumber) {
         while ((peerServerNumber = 1 + (rand() % serverList.size())) == serverNumber);
         
         // construct a message
-        std::string message = "Message #" + std::to_string(++n_messages_sent) + 
-                              " from server #" + std::to_string(serverNumber);
+        std::string message = "\n\n~~~~~~Message #" + std::to_string(++n_messages_sent) + 
+                              " from server #" + std::to_string(serverNumber) + "~~~~~~~\n\n";
  
         
         // send the message

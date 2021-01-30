@@ -66,7 +66,12 @@ Networker::Networker(const short port) {
         perror("\n Error : socket() failed \n");
         exit(EXIT_FAILURE);
     } 
-
+    // to prevent 'bind() failed: address already in use' errors on restarting
+    int enable = 1;
+    if (setsockopt(_listenfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
+        perror("\n Error : setsockopt() failed \n");
+        exit(EXIT_FAILURE);
+    }
     if (bind(_listenfd, (struct sockaddr*)&_addr, sizeof(_addr)) < 0) {
         perror("\n Error : bind() failed \n");
         exit(EXIT_FAILURE);
