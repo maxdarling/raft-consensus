@@ -154,7 +154,7 @@ Messenger::~Messenger() {
  * todo: consider a way around indefinite blocking like using 
  * a timeout or spawning a thread to send the message. 
  */
-void Messenger::sendMessage(const int serverId, const std::string& message) {
+void Messenger::sendMessage(const int serverId, std::string message) {
     assert(_serverIdToFd.count(serverId));
 
     // serialize message and its length

@@ -1,18 +1,21 @@
+#include "Messenger.h"
+#include "RaftRPC.pb.h"
 #include <optional>
 #include <vector>
 #include <chrono>
-#include "Messenger.h"
 
 class Timer {
   public:
     Timer(int duration_ms);
     Timer(int duration_ms_lower_bound, int duration_ms_upper_bound);
     void start();
-    bool is_expired();
+    bool has_expired();
+    void mark_as_expired() { _marked_as_expired = true; }
     
   private:
     std::optional<std::chrono::time_point<std::chrono::steady_clock>> _start_time;
     std::chrono::milliseconds _timer_duration;
+    bool _marked_as_expired {false};
     
     // FOR USE IN RANDOM TIMER
     std::optional<int> _lower_bound;
@@ -25,9 +28,14 @@ class Server {
     void run();
 
   private:
+    struct Vote {
+      int term_voted;
+      int voted_for;
+    };
+
     // PERSISTENT STATE
     int _current_term {0};
-    std::optional<int> _voted_for;
+    std::optional<Vote> _vote;
     // _log[] -> might store protobuf messages encapsulating the raw commands?
 
     // VOLATILE STATE ON ALL SERVERS
@@ -48,12 +56,20 @@ class Server {
 
     // FOR DEBUGGING/LOGGING
     int _server_id;
+    // TODO(ali): make this the cluster_list map instead so we have addresses to direct clients
+    std::vector<int> _cluster_list; // stores IDs of servers in cluster
 
-    void RPC_handler();
+    void RPC_handler(const RPC &rpc);
     void leader_tasks();
-    void handler_AppendEntries();
-    void handler_RequestVote();
+    void handler_AppendEntries(const AppendEntries &ae);
+    void handler_RequestVote(const RequestVote &rv);
     void handler_ClientCommand();
     bool try_election();
     void apply_log_entries();
+
+    // send RPC to all servers in cluster
+    void send_RPC(const RPC &rpc);
+    // send RPC to a particular server
+    void send_RPC(const RPC &rpc, int _server_id);
+    std::optional<RPC> receive_RPC();
 };

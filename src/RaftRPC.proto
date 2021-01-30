@@ -1,14 +1,14 @@
 syntax = "proto3";
 
-package RPC;
+// package RPC;
 
 
 message AppendEntries {
-    bool isRequest = 1;
+    bool is_request = 1;
 
     // request fields
     int32 term = 2;
-    int32 leaderId = 3;
+    int32 leader_id = 3;
 
     // response fields
 
@@ -16,14 +16,14 @@ message AppendEntries {
 
 
 message RequestVote {
-    bool isRequest = 1;
+    bool is_request = 1;
 
     // request fields
     int32 term = 2;
-    int32 leaderId = 3;
+    int32 candidate_id = 3;
 
     // response fields
-
+    bool vote_granted = 4;
 }
 
 
@@ -31,13 +31,13 @@ message ClientRequest {
     string command = 1;
 }
 
-message container {
+message RPC {
     /* message instances */ 
-    AppendEntries appendEntries_message = 1;
-    RequestVote requestVote_message = 2;
-    ClientRequest clientRequest_message = 3;
+    AppendEntries AppendEntries_message = 1;
+    RequestVote RequestVote_message = 2;
+    ClientRequest ClientRequest_message = 3;
 }
 
-message containerLength {
-    int32 length = 1;
-}
+// message containerLength {
+//     int32 length = 1;
+// }

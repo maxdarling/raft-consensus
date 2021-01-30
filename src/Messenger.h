@@ -18,7 +18,7 @@ class Messenger {
     public: 
         Messenger(const int serverId, const unordered_map<int, struct sockaddr_in>& serverList);
         ~Messenger();
-        void sendMessage(const int serverId, const std::string& message);
+        void sendMessage(const int serverId, std::string message);
         std::optional<std::string> getNextMessage();
 
     private:
