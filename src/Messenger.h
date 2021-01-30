@@ -1,11 +1,5 @@
-/* includes */
 #include "Networker.h"
 
-/* Bundles information for inter-Messenger communication */
-struct serverInfo {
-    struct sockaddr_in addr;
-    int serverId;
-}; 
 
 /**
  * The Messenger class provides the abstraction of sending and receiving 

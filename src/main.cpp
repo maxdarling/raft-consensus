@@ -95,16 +95,6 @@ void MessengerTester(int serverNumber) {
         it->second.sin_port = htons(PORT_BASE + it->first);
         cout << "created server list entry. ID = "<< it->first << ",  port = " << it->second.sin_port << endl;
     }
-    // cout << p <<endl;
-    // vector<serverInfo> serverList;
-    // for (int i = 0; i < nServers; ++i) {
-    //     struct sockaddr_in addr;
-    //     memset(&addr, '0', sizeof(addr));
-    //     addr.sin_family = AF_INET; // use IPv4
-    //     addr.sin_addr.s_addr = INADDR_ANY; // use local IP
-    //     addr.sin_port = htons(PORT_BASE + i);
-    //     serverList.push_back(serverInfo{addr, i});
-    // }
 
     // start Messenger
     Messenger messenger(serverNumber, serverList);
@@ -133,8 +123,6 @@ void MessengerTester(int serverNumber) {
             cout << (*incMsgWrapper) << endl; 
         }
     }
-
-
 }
 
 int main(int argc, char* argv[])
