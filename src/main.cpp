@@ -45,7 +45,7 @@ void NetworkerTester(int serverNumber) {
     int n_messages_sent = 0;
     while(true) {
         int readfd;
-        if ((readfd = networker.getNextReadableFd()) != -1) {
+        if ((readfd = networker.getNextReadableFd(false)) != -1) {
             char buf [1024];
             int n = read(readfd, buf, sizeof(buf));
             std::string s(buf, n);  

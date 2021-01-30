@@ -43,10 +43,10 @@ const static int SHADOW_MESSAGE_ID = -190;
 void Messenger::collectMessagesRoutine() {
     while(true) {
         int connfd;
-        while ( (connfd = _networker->getNextReadableFd()) == -1) { // todo: make blocking
-            // keep waiting until we can read a new message
-        }
-        connfd = _networker->getNextReadableFd(true);
+        // while ( (connfd = _networker->getNextReadableFd()) == -1) {
+        //     // keep waiting until we can read a new message
+        // }
+        connfd = _networker->getNextReadableFd(true); // todo: perhaps use this later
 
         // read the message length first
         int len;
