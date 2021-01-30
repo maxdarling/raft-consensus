@@ -122,11 +122,25 @@ int Networker::sendAll(const int connfd, const void* buf, const int length) {
     // write the entire buffer's contents
     int bytesWritten = 0;
     while (bytesWritten < length) {
+        /* we must check that the connection is still open before we attempt
+           to write to it. to determine this, we use the fact that 'recv()' 
+           will read a '0' (an EOF) if the connection has been closed. 
+
+           note: it's also possible that 'recv()' return -1 as an error instead
+           of the usual -1 produced by the DONTWAIT flag. We currently do not
+           handle this case, as we are not able to produce it. 
+        */
+        int checkEOF = recv(connfd, nullptr, 1, MSG_DONTWAIT);
+        cout << "sendAll eof: " << checkEOF << endl;
+        if (checkEOF == 0) {
+            cout << "EOF detected in sendAll()" << endl;
+            return -1;
+        }
         // flag: disable error signal handler for this call. 
         int n = send(connfd, (char *)buf + bytesWritten, length - bytesWritten, MSG_NOSIGNAL);
         if (n < 0) {
-            cout << "sendAll() failed" << endl;
-            return bytesWritten; 
+            cout << "sendAll() failed (but connection wasn't closed)" << endl;
+            return -1; 
         }
         bytesWritten += n;
     }
@@ -145,11 +159,21 @@ int Networker::sendAll(const int connfd, const void* buf, const int length) {
 int Networker::readAll(const int connfd, void* buf, int bytesToRead) {
     int bytesRead = 0;
     while (bytesRead < bytesToRead) {
-        int n = recv(connfd, (char *)buf + bytesRead, bytesToRead - bytesRead, MSG_NOSIGNAL);
+        int n = recv(connfd, (char *)buf + bytesRead, bytesToRead - bytesRead, 0/*MSG_NOSIGNAL*/);
         // orderly shutdown, or an error ocurred
         if (n == 0 || n < 0) {
-            cout << "readAll() failed" << endl;
+            std::string errMsg = 
+                (n == 0 ? "peer closed connection" : "readAll() failed");
+            cout << errMsg << endl;
+            // no longer poll this fd
+            std::lock_guard<std::mutex> lock(_m);
             close(connfd);
+            for (int i = 0; i < _pfds_size; ++i) {
+                if (_pfds[i].fd == connfd) {
+                    std::swap(_pfds[i], _pfds[_pfds_size - 1]);
+                    --_pfds_size;
+                }
+            }
             return -1; 
         }
         bytesRead += n;
@@ -183,6 +207,7 @@ int Networker::getNextReadableFd(bool shouldBlock) {
                 return -1;
             }
         }
+
         // some fd's are now ready to read!
         std::lock_guard<std::mutex> lock(_m);
         for (int i = 0; i < _pfds_size; ++i) {

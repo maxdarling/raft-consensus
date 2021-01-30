@@ -43,17 +43,15 @@ const static int SHADOW_MESSAGE_ID = -190;
 void Messenger::collectMessagesRoutine() {
     while(true) {
         int connfd;
-        // while ( (connfd = _networker->getNextReadableFd()) == -1) {
+        // while ( (connfd = _networker->getNextReadableFd(false)) == -1) {
         //     // keep waiting until we can read a new message
         // }
-        connfd = _networker->getNextReadableFd(true); // todo: perhaps use this later
+        connfd = _networker->getNextReadableFd(true);
 
         // read the message length first
         int len;
         int n = _networker->readAll(connfd, &len, sizeof(len));
-        if (n < sizeof(len)) {
-            // perror("\n Error : read() failed to read 4-byte length \n");
-            // exit(EXIT_FAILURE);
+        if (n != sizeof(len)) {
             continue;
         }
         len = ntohl(len); // convert back to host order before using 
@@ -64,15 +62,13 @@ void Messenger::collectMessagesRoutine() {
             // protocol: read the peer's 4-byte ID 
             int peerServerId;
             n = _networker->readAll(connfd, &peerServerId, sizeof(peerServerId));
-            if (n < sizeof(peerServerId)) {
-                // perror("\n Error : read() failed to read 4-byte length \n");
-                // exit(EXIT_FAILURE);
+            if (n != sizeof(peerServerId)) {
                 continue;
             }
             peerServerId = ntohl(peerServerId);
             printf("Messenger conn request from server %d \n", peerServerId);
 
-            // update the connection to the peer 
+            // update the outbound connection to the peer 
             if (_serverIdToFd.count(peerServerId)) {
                 close(_serverIdToFd[peerServerId]);
             }
@@ -84,9 +80,7 @@ void Messenger::collectMessagesRoutine() {
             // read the rest of the message
             char msgBuf [len];
             n = _networker->readAll(connfd, msgBuf, sizeof(msgBuf));
-            if (n < len) {
-                // perror("\n Error : read() failed to read entire message at once \n"); // todo: fix
-                // exit(EXIT_FAILURE);
+            if (n != len) {
                 continue;
             }
 
@@ -151,11 +145,15 @@ Messenger::~Messenger() {
  * 
  * This method blocks until the entire message has been sent. 
  * 
- * todo: consider a way around indefinite blocking like using 
- * a timeout or spawning a thread to send the message. 
+ * If an error occurred while sending the message, the function simply returns.
+ * 
+ * todo: make sure that we're okay with letting error happen silently. 
  */
 void Messenger::sendMessage(const int serverId, std::string message) {
-    assert(_serverIdToFd.count(serverId));
+    if (!_serverIdToFd.count(serverId)) {
+        cout << "sendMessage(): server#" << serverId << "is bogus, or we closed it" << endl;
+        return;
+    }
 
     // serialize message and its length
     int len = message.length();
@@ -164,19 +162,27 @@ void Messenger::sendMessage(const int serverId, std::string message) {
 
     // send the message length, then the message itself
     int connfd = _serverIdToFd[serverId];
-    _networker->sendAll(connfd, &len, sizeof(len)); // todo: catch return value
-    cout << "sent msg length" << endl;
-    _networker->sendAll(connfd, message.c_str(), message.length());
-    cout << "sent msg body" << endl;
+    int n = _networker->sendAll(connfd, &len, sizeof(len));
+    if (n != sizeof(len)) {
+        cout << "sendMessage failed, closing conn to server#" << serverId << endl;
+        close(_serverIdToFd[serverId]);
+        _serverIdToFd.erase(serverId);
+        return;
+    }
+    //cout << "sent msg length" << endl;
+    n = _networker->sendAll(connfd, message.c_str(), message.length());
+    if (n != message.length()) {
+        cout << "sendMessage failed, closing conn to server#" << serverId << endl;
+        close(_serverIdToFd[serverId]);
+        _serverIdToFd.erase(serverId);
+        return;
+    }
+    //cout << "sent msg body" << endl;
 }
 
 
 /** 
- * Return a message if one is available. If not, return blank.
- * 
- * This method does not block, and therefore is suitable for use in a hot-loop.
- * 
- * todo: add a blocking version, or make a flag available 
+ * Return a message if one is available.
  */
 std::optional<std::string> Messenger::getNextMessage() {
     // check the message queue 
