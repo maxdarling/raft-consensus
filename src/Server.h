@@ -36,7 +36,6 @@ class Server {
     // PERSISTENT STATE
     int _current_term {0};
     std::optional<Vote> _vote;
-    // _log[] -> might store protobuf messages encapsulating the raw commands?
 
     // VOLATILE STATE ON ALL SERVERS
     int _commit_index {0};

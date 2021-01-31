@@ -30,7 +30,7 @@ struct clientAddrAndFd {
 class Messenger {
     public: 
         Messenger(const int serverId, const unordered_map<int, struct sockaddr_in>& serverList, 
-                  bool isClient, int clientPort);
+                  bool isClient = false, int clientPort = -1);
         ~Messenger();
         
         void sendMessage(const int serverId, std::string message);
