@@ -1,9 +1,10 @@
 #include "Messenger.h"
 
-/* for read() */
+/* for 'close()', 'sleep()' */
 #include <unistd.h>
 
 #include <iostream>
+
 using std::cout;
 using std::endl;
 
@@ -16,18 +17,12 @@ const static int SHADOW_MESSAGE_ID = -190;
  * A simple protocol is used for delimiting messages. Each communication leads
  * with 4 bytes - denoting message length - and follows with the message itself.
  * 
- * 
  * Blocking / non-Blocking Calls: 
  * -todo: determine which we aim to provide
  * 
  * 
- * 
  * Todo:
- * -define a special messenger-internal message protocol (likely <special_flag, serverId>) for crashed servers
- * -change constructor to be based in terms of these messages (later: impose ordering for fun?)
- *      -note: this will auto-fix a crashed server trying to reconnect since constructor.  
  * -add documentation in header file about shadow messages, background thread
- * -properly handle errors (failed writes, reads. close sockets, close conns? (or just ignore :) ))
  * -improve naming scheme (connfd from 'getNextReadableFd' is bad, perhaps. only from 'establishConnection'?)
  * -see if we don't have to convert serverList ports to network order before passing into messenger
  *  -> to do so, gotta change networker estConn() and constructor, perhaps
@@ -35,37 +30,33 @@ const static int SHADOW_MESSAGE_ID = -190;
 
 
 /** 
- * Background thread routine that will await incoming messages and process
- * them. Shadow messages will be prompt a network connection attempt, while
- * client messages will be added to the message queue. 
- *
+ * Background thread routine to process incoming messages. 
+ * 
+ * Protocol: 
+ * -client messages will be placed in the message queue
+ * -shadow messages will prompt a network connection to the sender
  */
 void Messenger::collectMessagesRoutine() {
     while(true) {
-        int connfd;
-        // while ( (connfd = _networker->getNextReadableFd(false)) == -1) {
-        //     // keep waiting until we can read a new message
-        // }
-        connfd = _networker->getNextReadableFd(true);
+        int connfd = _networker->getNextReadableFd(true);
 
         // read the message length first
         int len;
         int n = _networker->readAll(connfd, &len, sizeof(len));
         if (n != sizeof(len)) {
-            cout << "readAll failed, so we're aborting this message" << endl;
+            cout << "readAll failed, message collection aborted" << endl;
             continue;
         }
         len = ntohl(len); // convert back to host order before using 
-        printf("Incoming message is %d bytes \n", len);
+        cout << "Incoming message is " << len << " bytes" << endl;
 
-        // check for shadow message
+        // handle shadow message
         if (len == SHADOW_MESSAGE_ID) {
-            cout << "enter shadow message read handler" << endl;
             // protocol: read the peer's 4-byte ID 
             int peerServerId;
             n = _networker->readAll(connfd, &peerServerId, sizeof(peerServerId));
             if (n != sizeof(peerServerId)) {
-                cout << "readAll failed, so we're aborting this message" << endl;
+                cout << "readAll failed, message collection aborted" << endl;
                 continue;
             }
             peerServerId = ntohl(peerServerId);
@@ -77,21 +68,19 @@ void Messenger::collectMessagesRoutine() {
             }
             _serverIdToFd[peerServerId] =
                 _networker->establishConnection(_serverIdToAddr[peerServerId]);
-            cout << "successful shadow connection to server " << peerServerId << endl;
+            cout << "successful ~~SHADOW~~ connection to server " << peerServerId << endl;
         }
-        // not a shadow message, but a peer message
+
+        // handle client message 
         else {
-            // read the rest of the message
             char msgBuf [len];
             n = _networker->readAll(connfd, msgBuf, sizeof(msgBuf));
             if (n != len) {
-                cout << "readAll failed, so we're aborting this message" << endl;
+                cout << "readAll failed, message collection aborted" << endl;
                 continue;
             }
-
             std::lock_guard<std::mutex> lock(_m);
-            std::string message(msgBuf, sizeof(msgBuf));
-            _messageQueue.push(message);
+            _messageQueue.push(std::string(msgBuf, sizeof(msgBuf)));
         }
     }
 }
@@ -100,11 +89,12 @@ void Messenger::collectMessagesRoutine() {
 /**
  * Establishes connections to all other messengers in the given list.
  * 
- * Todo: make connecting robust 
+ * Waits indefinitely until all outgoing connections are established. 
  */
 Messenger::Messenger(const int serverId, const unordered_map<int, struct sockaddr_in>& serverList) {
     _serverId = serverId;
     _serverIdToAddr = serverList;
+
     // start a networker on our assigned port
     int port = ntohs(_serverIdToAddr[_serverId].sin_port);
     _networker = new Networker(port);
@@ -155,13 +145,13 @@ Messenger::~Messenger() {
  * 
  * Errors and closed connections are dealt with automatically.  
  */
-void Messenger::_sendMessage(const int serverId, std::string message, bool isShadow) {
+void Messenger::_sendMessage(const int serverId, std::string message, bool isShadowMsg) {
     if (!_serverIdToFd.count(serverId)) {
-        cout << "sendMessage(): server#" << serverId << " is bogus, or we closed it" << endl;
+        cout << "sendMessage(): server #" << serverId << " is bogus, or we closed it" << endl;
         return;
     }
     // serialize message and its length
-    int len = (isShadow) ? SHADOW_MESSAGE_ID : message.length();
+    int len = (isShadowMsg) ? SHADOW_MESSAGE_ID : message.length();
     cout << "sending message of length " << len << endl;
     len = htonl(len); // convert to network order before sending
 
@@ -169,29 +159,31 @@ void Messenger::_sendMessage(const int serverId, std::string message, bool isSha
     int connfd = _serverIdToFd[serverId];
     int n = _networker->sendAll(connfd, &len, sizeof(len));
     if (n != sizeof(len)) {
-        cout << "sendMessage failed, closing conn to server#" << serverId << endl;
+        cout << "sendMessage failed, closing conn to server #" << serverId << endl;
         close(_serverIdToFd[serverId]);
         _serverIdToFd.erase(serverId);
         return;
     }
     n = _networker->sendAll(connfd, message.c_str(), message.length());
     if (n != message.length()) {
-        cout << "sendMessage failed, closing conn to server#" << serverId << endl;
+        cout << "sendMessage failed, closing conn to server #" << serverId << endl;
         close(_serverIdToFd[serverId]);
         _serverIdToFd.erase(serverId);
         return;
     }
 }
 
+
 /**
- * public message sending API. 
+ * public version of '_sendMessage()', without shadow messages. 
  * 
- * See '_sendMessage()' above for details. 
+ * Note: the method is wrapped to prevent information leakage. We want
+ * Messengers to additionally USE the message-sending functionality they
+ * publicly implement, but for internal purposes (ie. shadow messages).
  */
 void Messenger::sendMessage(const int serverId, std::string message) {
     _sendMessage(serverId, message, false);
 }
-
 
 
 /** 

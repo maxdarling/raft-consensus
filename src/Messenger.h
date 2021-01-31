@@ -5,7 +5,8 @@
  * The Messenger class provides the abstraction of sending and receiving 
  * delimited messages between a pre-specified group of nodes.  
  * 
- * Protocol buffers are used as the "message" format. (todo: generalize to str)
+ * 
+ * todo: add detail about shadow messages, clients
  */
 
 class Messenger {
@@ -16,17 +17,24 @@ class Messenger {
         std::optional<std::string> getNextMessage();
 
     private:
+        // todo: remove and solely define these functions in source file?
         void collectMessagesRoutine();
         void _sendMessage(const int serverId, std::string message, bool isShadow);
 
 
-        int _serverId; /* identifier for this server */
-        Networker* _networker; /* manage network-level communications */
+        /* identifier for this server (from server list) */
+        int _serverId; 
 
-        std::mutex _m;
+        /* manage network-level communications */
+        Networker* _networker; 
 
-        unordered_map<int, int> _serverIdToFd; /* bookkeep connections */
+        /* synchronize shared accesses of the members below */
+        std::mutex _m; 
+
+        /* bookkeep connections */
+        unordered_map<int, int> _serverIdToFd; 
         unordered_map<int, struct sockaddr_in> _serverIdToAddr;
 
-        queue<std::string> _messageQueue; /* store collected messages */
+        /* store collected messages */
+        queue<std::string> _messageQueue;
 };
