@@ -22,7 +22,10 @@ int main(int argc, char* argv[]) {
     // explicit initialization because loop version is less easy to visualize
     unordered_map<int, struct sockaddr_in> cluster_info {
         {1, addr},
-        {2, addr}
+        {2, addr},
+        {3, addr},
+        {4, addr},
+        {5, addr}
     };
     for (auto it = cluster_info.begin(); it != cluster_info.end(); ++it) {
         it->second.sin_port = htons(PORT_BASE + it->first);
