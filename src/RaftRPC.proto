@@ -11,7 +11,6 @@ message AppendEntries {
     int32 leader_id = 3;
 
     // response fields
-
 }
 
 
@@ -38,6 +37,8 @@ message RPC {
     ClientRequest ClientRequest_message = 3;
 }
 
-// message containerLength {
-//     int32 length = 1;
-// }
+message ServerPersistentState {
+    int32 current_term = 1;
+    int32 term_voted = 2;
+    int32 voted_for = 3;
+}

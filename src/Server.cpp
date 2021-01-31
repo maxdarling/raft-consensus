@@ -1,5 +1,6 @@
 #include "Server.h"
 #include <iostream>
+#include <fstream>   // for fstream
 #include <random>    // for random_device
 #include <cstdlib>   // for rand()
 
@@ -16,7 +17,7 @@ Timer::Timer(int duration_ms) : _timer_duration(duration_ms) {}
 Timer::Timer(int duration_ms_lower_bound, int duration_ms_upper_bound) 
     : _lower_bound(duration_ms_lower_bound),
       _upper_bound(duration_ms_upper_bound) {
-    // TODO(ali): better RNG system?
+    // seed pseudorandom generator with truly random value
     std::random_device rd;
     srand(rd());
 }
@@ -31,7 +32,8 @@ void Timer::start() {
     }
 }
 
-// Returns true when the timer has expired.
+// Returns true when the timer has expired, or if the timer has been marked as
+// expired.
 bool Timer::has_expired() {
     if (_marked_as_expired) {
         _marked_as_expired = false;
@@ -55,13 +57,25 @@ Server::Server(const int server_id, const unordered_map<int, struct sockaddr_in>
       _heartbeat_timer(HEARTBEAT_TIMEOUT),
       _server_id(server_id),
       _cluster_list(cluster_info.size()) {
+    // FOR DEBUG LOGGING -- route STDERR to file
+    freopen("server_log.txt", "w", stderr);
+
     // Populate _cluster_list with IDs of servers in cluster
     transform(cluster_info.begin(), cluster_info.end(), _cluster_list.begin(), 
         [] (auto pair) { return pair.first; }
     );
 
-    // FOR DEBUG LOGGING -- route STDERR to file
-    freopen("server_log.txt", "w", stderr);
+    std::string fname = "server" + std::to_string(_server_id) + "_state";
+    std::ifstream ifs(fname, std::ios::binary);
+    // if a server state file exists, recover persistent state from this file
+    if (ifs) {
+        ServerPersistentState sps;
+        sps.ParseFromIstream(&ifs);
+        _current_term = sps.current_term();
+        if (sps.voted_for() != 0) _vote = {sps.term_voted(), sps.voted_for()};
+        ifs.close();
+        std::cerr << _server_id << ": recovering state {" << sps.current_term() << ", " << sps.term_voted() << ", " << sps.voted_for() << "}\n";
+    }
 }
 
 // Start the server, so that it may respond to requests from clients and other
@@ -82,6 +96,16 @@ void Server::run() {
 // correct handler.
 void Server::RPC_handler(const RPC &rpc) {
     // update persistent state variables on disk
+    std::string fname = "server" + std::to_string(_server_id) + "_state";
+    std::ofstream ofs(fname, std::ios::trunc | std::ios::binary);
+    ServerPersistentState sps;
+    sps.set_current_term(_current_term);
+    if (_vote) {
+        sps.set_term_voted(_vote->term_voted);
+        sps.set_voted_for(_vote->voted_for);
+    }
+    sps.SerializeToOstream(&ofs);
+    ofs.close();
 
     if (rpc.has_requestvote_message()) {
         const RequestVote &rv = rpc.requestvote_message();
@@ -137,7 +161,7 @@ void Server::leader_tasks() {
 
 // Process and reply to AppendEntries RPCs from leader.
 void Server::handler_AppendEntries(const AppendEntries &ae) {
-    std::cerr << _server_id << ": received AppendEntries from " << ae.term() << "\n";
+    std::cerr << _server_id << ": received AppendEntries from " << ae.leader_id() << "\n";
     
     // Reject stale requests.
     if (ae.term() < _current_term) {
@@ -263,7 +287,6 @@ void Server::send_RPC(const RPC &rpc) {
 void Server::send_RPC(const RPC &rpc, int server_id) {
     std::string rpc_str = rpc.SerializeAsString();
     _messenger.sendMessage(server_id, rpc_str);
-    std::cerr << _server_id << ": RPC sent to messenger\n";
 }
 
 // Return an RPC if one has been received.
