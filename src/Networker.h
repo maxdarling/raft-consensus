@@ -14,16 +14,6 @@ using std::vector;
 using std::unordered_map;
 using std::map;
 using std::queue; 
-// todo: figure out how to hide this in the source somehow
-struct cmpByAddr {
-    bool operator()(const struct sockaddr_in& a, const struct sockaddr_in& b) const {
-        if (a.sin_port != b.sin_port) {
-            return a.sin_port < b.sin_port;
-        }
-        return a.sin_addr.s_addr < b.sin_addr.s_addr;
-
-        }
-};
 
 class Networker {
     public: 
@@ -43,11 +33,6 @@ class Networker {
         struct sockaddr_in _addr;
 
         std::mutex _m;
-
-        //unordered_map<sockaddr_in, int> _currConnections; 
-        map<struct sockaddr_in, int, cmpByAddr> _currConnections; // above requires custom hash
-        //map<struct sockaddr_in, int> _currConnections; // above requires custom hash
-        //map<sockaddr_in, int, decltype(cmp)> _currConnections;
 
         struct pollfd* _pfds;
         int _pfds_size; 
