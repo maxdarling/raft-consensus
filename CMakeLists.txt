@@ -19,31 +19,35 @@ set(SOURCE_FILES
 
 set(HEADER_FILES
   src/Networker.h
-  src/Messenger.cpp
+  src/Messenger.h
   ${PROTO_HDRS})
 
 set(SERVER_SRCS
   src/Server.cpp
   src/Messenger.cpp
   src/Networker.cpp
+  src/Timer.cpp
   ${PROTO_SRCS})
 
 set(SERVER_HDRS
   src/Server.h
   src/Messenger.h
   src/Networker.h
+  src/Timer.h
   ${PROTO_HDRS})
 
 set(CLIENT_SRCS
   src/Client.cpp
   src/Messenger.cpp
   src/Networker.cpp
+  src/Timer.cpp
   ${PROTO_SRCS})
 
 set(CLIENT_HDRS
   src/Client.h
   src/Messenger.h
   src/Networker.h
+  src/Timer.h
   ${PROTO_HDRS})
 
 # add the executables

@@ -50,7 +50,7 @@ void Messenger::collectMessagesRoutine() {
             continue;
         }
         len = ntohl(len); // convert back to host order before using 
-        cout << "Incoming message is " << len << " bytes" << endl;
+        // cout << "Incoming message is " << len << " bytes" << endl;
 
         // handle shadow message
         if (len == SHADOW_MESSAGE_ID) {
@@ -168,7 +168,7 @@ bool Messenger::_sendMessage(const int serverId, std::string message, bool isSha
 
     // serialize message and its length
     int len = (isShadowMsg) ? SHADOW_MESSAGE_ID : message.length();
-    cout << "sending message of length " << len << endl;
+    // cout << "sending message of length " << len << endl;
     len = htonl(len); // convert to network order before sending
 
     // send the message length, then the message itself

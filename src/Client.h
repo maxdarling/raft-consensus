@@ -1,4 +1,5 @@
 #include "Messenger.h"
+#include "Timer.h"
 
 class Client {
   public:
@@ -7,8 +8,10 @@ class Client {
     
   private:
     Messenger _messenger;
-    unsigned int _addr;
-    int _port;
+    Timer _requestTimer;
+    unsigned int _clientAddr;
+    int _clientPort;
+    int _clusterSize;
     int _leaderID {1};
 
     std::string executeCommand(std::string command);

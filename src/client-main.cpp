@@ -17,7 +17,9 @@ int main(int argc, char* argv[]) {
     unordered_map<int, sockaddr_in> clusterInfo {
         {1, addr},
         {2, addr},
-        {3, addr}
+        {3, addr},
+        {4, addr},
+        {5, addr}
     };
 
     // overwrite with correct server port numbers
