@@ -22,7 +22,7 @@ Timer::Timer(int duration_ms_lower_bound, int duration_ms_upper_bound)
     srand(rd());
 }
 
-// Start the timer. If the timer is already running, it is restarted.
+// Start the timer. If the timer is already running, restart it.
 void Timer::start() {
     _start_time = std::chrono::steady_clock::now();
     if (_lower_bound) {
@@ -51,8 +51,8 @@ bool Timer::has_expired() {
 }
 
 // SERVER CONSTRUCTOR
-Server::Server(const int server_id, const unordered_map<int, struct sockaddr_in>& cluster_info) 
-    : _messenger(server_id, cluster_info, false, -1), 
+Server::Server(const int server_id, const unordered_map<int, sockaddr_in>& cluster_info) 
+    : _messenger(server_id, cluster_info), 
       _election_timer(ELECTION_TIMEOUT_LOWER_BOUND, ELECTION_TIMEOUT_UPPER_BOUND), 
       _heartbeat_timer(HEARTBEAT_TIMEOUT),
       _server_id(server_id),
@@ -67,7 +67,7 @@ Server::Server(const int server_id, const unordered_map<int, struct sockaddr_in>
 
     std::string fname = "server" + std::to_string(_server_id) + "_state";
     std::ifstream ifs(fname, std::ios::binary);
-    // if a server state file exists, recover persistent state from this file
+    // if a server state recovery file exists, recover persistent state from this file
     if (ifs) {
         ServerPersistentState sps;
         sps.ParseFromIstream(&ifs);
@@ -177,7 +177,7 @@ void Server::handler_AppendEntries(const AppendEntries &ae) {
 // Process and reply to RequestVote RPCs from leader.
 void Server::handler_RequestVote(const RequestVote &rv) {
     if (!rv.is_request()) {
-        std::cerr << "Received RequestVote response outside of try_election()\n";
+        std::cerr << _server_id << ": received RequestVote response outside of election\n";
         return;
     }
 
@@ -189,12 +189,11 @@ void Server::handler_RequestVote(const RequestVote &rv) {
     if (!_vote || _vote->term_voted < _current_term || _vote->voted_for == rv.candidate_id()) {
         if (rv.term() >= _current_term) {
             std::cerr << _server_id << ": voting for " << rv.candidate_id() << "\n";
-            _vote = {_current_term, rv.candidate_id()};
             rv_reply->set_vote_granted(true);
+            _vote = {_current_term, rv.candidate_id()};
         } else std::cerr << _server_id << ": term more up-do-date than " << rv.candidate_id() << ", declining vote\n";
     } else std::cerr << _server_id << ": voted for " << _vote->voted_for << " this term, declining vote for " << rv.candidate_id() << "\n";
     rpc.set_allocated_requestvote_message(rv_reply);
-
     send_RPC(rpc, rv.candidate_id());
 }
 
@@ -241,7 +240,7 @@ bool Server::try_election() {
 
         if (rpc_received_opt->has_requestvote_message()) {
             const RequestVote &rv_received = rpc_received_opt->requestvote_message();
-            // CASE: different server is also running an election; reply to their request
+            // CASE: different server is also running an election; respond to their request
             if (rv_received.is_request()) {
                 std::cerr << _server_id << ": received RequestVote from " << rv_received.candidate_id() << " in election\n";
                 RPC_handler(*rpc_received_opt);
