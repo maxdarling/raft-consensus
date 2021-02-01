@@ -23,7 +23,7 @@ const short MAX_BACKLOG_CONNECTIONS = 10;
 
 
 /**
- * Background thread routine to establish incoming connection requeuests. 
+ * Background thread routine to accept incoming connection requeuests. 
  */
 void Networker::listenerRoutine() {
     while(true) {
@@ -43,7 +43,9 @@ void Networker::listenerRoutine() {
 
 
 /**
- * Setup a listening socket and spawn a background listener thread for it.
+ * Activate the automatic handling of incoming connections.  
+ * 
+ * 'port' is the port to listen on in host-byte order. 
  */
 Networker::Networker(const short port) {
     //initialize members
@@ -76,7 +78,7 @@ Networker::Networker(const short port) {
         exit(EXIT_FAILURE);
     }
 
-    // start a listener thread in the background
+    // start the listener thread in the background
     std::thread th = std::thread(&Networker::listenerRoutine, this);
     th.detach();
 }
@@ -94,7 +96,6 @@ Networker::~Networker() {
  * Establishes an outbound connection with a server at the specified address,
  * and returns the associated file descriptor. If the
  * connection fails, returns -1.
- * 
  */
 int Networker::establishConnection(const sockaddr_in& serv_addr) {
     int connfd;
@@ -103,78 +104,11 @@ int Networker::establishConnection(const sockaddr_in& serv_addr) {
         return -1;
     } 
     if(connect(connfd, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        cout << "establishConnection(): 'connect()' failed" << endl;
         return -1;
     } 
 
     return connfd; 
-}
-
-
-/** 
- * Send all bytes to a connection with the specified file descriptor.
- * 
- * Returns the # of bytes sent, or -1 on an error or closed connection. 
- */
-int Networker::sendAll(const int connfd, const void* buf, const int length) { 
-    int bytesWritten = 0;
-    while (bytesWritten < length) {
-        /* we must check that the connection is still open before we attempt
-           to write to it. to determine this, we use the fact that 'recv()' 
-           will read a '0' (an EOF) if the connection has been closed. 
-
-           note: it's also possible that 'recv()' return -1 as an error instead
-           of the usual -1 produced by the DONTWAIT flag. We currently do not
-           handle this case, as we are not able to produce it. 
-        */
-        int checkEOF = recv(connfd, nullptr, 1, MSG_DONTWAIT);
-        if (checkEOF == 0) {
-            cout << "EOF detected in sendAll()" << endl;
-            return -1;
-        }
-        // flag: disable error signal handling for this call. 
-        int n = send(connfd, (char *)buf + bytesWritten, length - bytesWritten, MSG_NOSIGNAL);
-        if (n < 0) {
-            cout << "sendAll() failed (but connection wasn't closed)" << endl;
-            return -1; 
-        }
-        bytesWritten += n;
-    }
-    return bytesWritten;
-}
-
-
-/** 
- * Read in entirety from a peer's socket. Returns the number of bytes read, or
- * -1 if there was an error.
- * 
- * If the peer closed the connection or an error ocurred while reading, 
- * the socket will be closed.
- */
-int Networker::readAll(const int connfd, void* buf, int bytesToRead) {
-    int bytesRead = 0;
-    while (bytesRead < bytesToRead) {
-        int n = recv(connfd, (char *)buf + bytesRead, bytesToRead - bytesRead, MSG_NOSIGNAL);
-        // orderly shutdown, or an error ocurred
-        if (n == 0 || n < 0) {
-            std::string errMsg = (n == 0 ? 
-                "readAll(): peer closed the connection" :
-                "readAll() failed");
-            cout << errMsg << endl;
-            // disassociate with this fd 
-            std::lock_guard<std::mutex> lock(_m);
-            close(connfd);
-            for (int i = 0; i < _pfds_size; ++i) {
-                if (_pfds[i].fd == connfd) {
-                    std::swap(_pfds[i], _pfds[_pfds_size - 1]);
-                    --_pfds_size;
-                    break;
-                }
-            }
-            return -1; 
-        }
-        bytesRead += n;
-    }
-    return bytesRead;
 }
 
 
@@ -215,3 +149,72 @@ int Networker::getNextReadableFd(bool shouldBlock) {
     _readableFds.pop();
     return result_fd;
 }
+
+
+/** 
+ * Attempts to send 'length' bytes to the specified socket descriptor. 
+ * Returns the # of bytes sent, or -1 on an error or closed connection.
+ */
+int Networker::sendAll(const int connfd, const void* buf, const int length) { 
+    int bytesWritten = 0;
+    while (bytesWritten < length) {
+        /* we must check that the connection is still open before we attempt to
+         * write to it. to determine this, we use the fact that 'recv()' will
+         * read a '0' (an EOF) if the connection has been closed. 
+         * 
+         * note: in theory, it's possible that 'recv()' return -1 as an error
+         * instead of the usual -1 produced by the DONTWAIT flag. We currently
+         * do not handle this case, as we are not able to produce it.
+         */
+        int checkEOF = recv(connfd, nullptr, 1, MSG_DONTWAIT);
+        if (checkEOF == 0) {
+            cout << "EOF detected in sendAll()" << endl;
+            return -1;
+        }
+        // flag: disable error signal handling for this call. 
+        int n = send(connfd, (char *)buf + bytesWritten, length - bytesWritten, MSG_NOSIGNAL);
+        if (n < 0) {
+            cout << "sendAll() failed (but connection wasn't closed)" << endl;
+            return -1; 
+        }
+        bytesWritten += n;
+    }
+    return bytesWritten;
+}
+
+
+/** 
+ * Read 'bytesToRead' bytes from a peer's socket. Returns the number of bytes read, or
+ * -1 if there was an error.
+ * 
+ * If the peer closed the connection or an error ocurred while reading, 
+ * the socket will be closed.
+ */
+int Networker::readAll(const int connfd, void* buf, int bytesToRead) {
+    int bytesRead = 0;
+    while (bytesRead < bytesToRead) {
+        int n = recv(connfd, (char *)buf + bytesRead, bytesToRead - bytesRead, MSG_NOSIGNAL);
+        // orderly shutdown, or an error ocurred
+        if (n == 0 || n < 0) {
+            std::string errMsg = (n == 0 ? 
+                "readAll(): peer closed the connection" :
+                "readAll() failed");
+            cout << errMsg << endl;
+            // disassociate with this fd 
+            std::lock_guard<std::mutex> lock(_m);
+            close(connfd);
+            for (int i = 0; i < _pfds_size; ++i) {
+                if (_pfds[i].fd == connfd) {
+                    std::swap(_pfds[i], _pfds[_pfds_size - 1]);
+                    --_pfds_size;
+                    break;
+                }
+            }
+            return -1; 
+        }
+        bytesRead += n;
+    }
+    return bytesRead;
+}
+
+

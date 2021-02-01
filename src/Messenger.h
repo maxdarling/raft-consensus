@@ -6,11 +6,20 @@ using std::unordered_set;
 
 
 /**
- * The Messenger class provides the abstraction of sending and receiving 
- * delimited messages between a pre-specified group of nodes.  
+ * The Messenger class implements message-based communication between 
+ * a grid of pre-specified servers and optional clients. Messenger servers
+ * automatically connect to one another at startup, and can easily re-join the
+ * grid after crashing.
  * 
+ * Usage Notes:
+ * -Messenger servers will not finish initializing until they've connected to 
+ * all other servers in the server list. This is designed to make coordination
+ * easier for the client (eg. starting instances in many different terminal 
+ * windows). As this is a rigid constraint, future revisions may add a timeout
+ * window. Note, this rule does not apply to client Messenger instances.
  * 
- * todo: add detail about shadow messages, clients
+ * -To re-join the grid after a crash, simply initialize the Messenger 
+ * identically to before. There are no extra steps needed.  
  */
 
 class Messenger {
@@ -26,17 +35,16 @@ class Messenger {
         std::optional<std::string> getNextMessage();
 
     private:
-        // todo: remove and solely define these functions in source file?
+        // should these be defined in here, too, or only in the source file?
         void collectMessagesRoutine();
         bool _sendMessage(const int serverId, std::string message, bool isShadow, 
                           bool isIntendedForClient, sockaddr_in clientAddr);
 
-
-        /* identifier for this server (from server list) */
-        int _serverId; 
-
-        /* used to separate client and server functionality */
+        /* distinguish server instances from client ones */
         bool isClient;
+
+        /* identifier for this server instance, from server list */
+        int _serverId; 
 
         /* manage network-level communications */
         Networker* _networker; 

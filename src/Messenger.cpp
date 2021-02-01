@@ -13,59 +13,55 @@ const static int SHADOW_MESSAGE_ID = -190;
 bool sockaddr_in_cmp(const sockaddr_in a, const sockaddr_in b);
 
 /** 
- * ~ Implementation Notes ~
+ * ~~~~~~ Design Notes ~~~~~~
  * 
  * Network message delimiting: 
  * A simple protocol is used for delimiting messages. Each communication leads
  * with 4 bytes - denoting message length - and follows with the message itself.
  * 
- * Blocking / non-Blocking Calls: 
- * -todo: determine which we aim to provide
- * 
- * 
- * Todo:
- * -add documentation in header file about shadow messages, background thread
- * -improve naming scheme (connfd from 'getNextReadableFd' is bad, perhaps. only from 'establishConnection'?)
- * -see if we don't have to convert serverList ports to network order before passing into messenger
- *  -> to do so, gotta change networker estConn() and constructor, perhaps
+ * Server re-connection:
+ * To implement post-crash reconnection, servers send special internal 
+ * messages to all other servers on initialization. These are dubbed "shadow 
+ * messages", and contain only the sender's serverId. When received, they 
+ * indicate that the sending server is running, and wants to be connected to.
+ * For simplicity, these messages are always sent on initialization, whether
+ * the server is starting for the "first time" or re-joining post-crash.
  */ 
 
 
 /** 
  * Background thread routine to process incoming messages. 
  * 
- * Protocol: 
- * -client messages will be placed in the message queue
- * -shadow messages will prompt a network connection to the sender
+ * Client messages will be placed in the message queue, while shadow messages
+ * will prompt a network connection to the sender.
  */
 void Messenger::collectMessagesRoutine() {
     while(true) {
         int connfd = _networker->getNextReadableFd(true);
 
         // read the message length first
-        int len;
-        int n = _networker->readAll(connfd, &len, sizeof(len));
-        if (n != sizeof(len)) {
+        int msgLength;
+        int n = _networker->readAll(connfd, &msgLength, sizeof(msgLength));
+        if (n != sizeof(msgLength)) {
             cout << "readAll failed, message collection aborted" << endl;
             continue;
         }
-        len = ntohl(len); // convert back to host order before using 
-        // cout << "Incoming message is " << len << " bytes" << endl;
+        msgLength = ntohl(msgLength); // convert back to host order before using 
 
         // handle shadow message
-        if (len == SHADOW_MESSAGE_ID) {
+        if (msgLength == SHADOW_MESSAGE_ID) {
             // protocol: read the peer's 4-byte ID 
             int peerServerId;
             n = _networker->readAll(connfd, &peerServerId, sizeof(peerServerId));
             if (n != sizeof(peerServerId)) {
-                cout << "readAll failed, message collection aborted" << endl;
+                cout << "collectMessagesRoutine(): aborting message" << endl;
                 continue;
             }
             peerServerId = ntohl(peerServerId);
-            cout << "received shadow message from server " << peerServerId << endl;
 
             // update the outbound connection to the peer 
-            if (_serverIdToFd.count(peerServerId)) {
+            if (_serverIdToFd.count(peerServerId) && 
+                !_closedConnections.count(peerServerId)) {
                 close(_serverIdToFd[peerServerId]);
             }
             _serverIdToFd[peerServerId] =
@@ -74,11 +70,11 @@ void Messenger::collectMessagesRoutine() {
             cout << "successful ~~SHADOW~~ connection to server " << peerServerId << endl;
         }
 
-        // handle client message 
+        // handle default message 
         else {
-            char msgBuf [len];
+            char msgBuf [msgLength];
             n = _networker->readAll(connfd, msgBuf, sizeof(msgBuf));
-            if (n != len) {
+            if (n != msgLength) {
                 cout << "readAll failed, message collection aborted" << endl;
                 continue;
             }
@@ -90,9 +86,10 @@ void Messenger::collectMessagesRoutine() {
 
 
 /**
- * Establishes connections to all other messengers in the given list.
- * 
+ * Establishes connections to all other messenger servers in the given list.
  * Waits indefinitely until all outgoing connections are established. 
+ * 
+ * Note: 'clientPort' should be in host-byte order. 
  */
 Messenger::Messenger(const int serverId, const unordered_map<int, struct sockaddr_in>& serverList, 
                      bool isClient, int clientPort) {
@@ -111,11 +108,9 @@ Messenger::Messenger(const int serverId, const unordered_map<int, struct sockadd
     // client doesn't opt to connect to all other messengers, and it cannot send 
     // send shadow messages 
     if (isClient) {
-        cout << "client messenger initialized" << endl;
         return;
     }
 
-    cout << "Begin server connection loop inside Messenger" << endl;
     // connect to other servers
     for (const auto& [peerId, peerAddr] : serverList) {
         if (peerId != _serverId) {
@@ -126,21 +121,14 @@ Messenger::Messenger(const int serverId, const unordered_map<int, struct sockadd
             }
             cout << "successfully connected to server #" << peerId << endl;
             _serverIdToFd[peerId] = connfd;
-            int msg = htonl(_serverId); // shadow message: tell peerd w/ peerId to connect to us at _serverId
+
+            // send a shadow message to this peer
+            int msg = htonl(_serverId); 
             char buf [4];
             memcpy(buf, &msg, sizeof(msg));
             _sendMessage(peerId, std::string(buf, sizeof(buf)), true, false, {});
-            cout << "sent shadow message to server #" << peerId << endl;
-            sleep(5);
         }
     }
-    cout << "messenger map contents are: " << endl;
-    for (auto it = _serverIdToFd.begin(); it != _serverIdToFd.end(); ++it) {
-        cout << it->first<< ", " << it->second << endl;
-    }
-    sleep(5);
-    // wait till all connections have are made (before client may send/receive)
-    // note: the timer approach is not guaranteed to work, but likely to...
     cout << "Outbound connections completed on server " << _serverId << endl;
 }
 
@@ -166,27 +154,15 @@ bool Messenger::_sendMessage(const int serverId, std::string message, bool isSha
         return false;
     }
 
-    // serialize message and its length
-    int len = (isShadowMsg) ? SHADOW_MESSAGE_ID : message.length();
-    // cout << "sending message of length " << len << endl;
-    len = htonl(len); // convert to network order before sending
+    int msgLength = (isShadowMsg) ? SHADOW_MESSAGE_ID : message.length();
+    msgLength = htonl(msgLength); // convert to network order before sending
 
-    // send the message length, then the message itself
     int connfd = (isIntendedForClient) ? _clientAddrToFd[clientAddr] : _serverIdToFd[serverId];
-    int n = _networker->sendAll(connfd, &len, sizeof(len));
-    if (n != sizeof(len)) {
-        cout << "sendMessage failed, closing conn to server #" << serverId << endl;
-        if (isIntendedForClient) {
-            close(_clientAddrToFd[clientAddr]);
-        } else {
-            close(_serverIdToFd[serverId]);
-            _closedConnections.insert(serverId);
-        }
-        return false;
-    }
-    n = _networker->sendAll(connfd, message.c_str(), message.length());
-    if (n != message.length()) {
-        cout << "sendMessage failed, closing conn to server #" << serverId << endl;
+
+    // send message length and body
+    if (_networker->sendAll(connfd, &msgLength, sizeof(msgLength)) != sizeof(msgLength) ||
+        _networker->sendAll(connfd, message.c_str(), message.length()) != message.length()) {
+        cout << "sendMessage(): closing connection to server #" << serverId << endl;
         if (isIntendedForClient) {
             close(_clientAddrToFd[clientAddr]);
         } else {
@@ -200,6 +176,7 @@ bool Messenger::_sendMessage(const int serverId, std::string message, bool isSha
 
 
 /**
+ * todo: deprecate
  * public version of '_sendMessage()', without shadow messages. Returns true if
  * the message was sent successfully. 
  * 
