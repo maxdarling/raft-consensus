@@ -26,7 +26,7 @@ int main(int argc, char* argv[]) {
     }
 
     Client c(addr, clusterInfo);
-    c.executeCommand(argv[1]);
+    c.run();
 
     return 0;
 }

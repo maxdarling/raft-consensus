@@ -1,8 +1,8 @@
 #include "Server.h"
 #include <iostream>
+#include <array>
 #include <fstream>   // for fstream
 #include <random>    // for random_device
-#include <cstdlib>   // for rand()
 
 // in milliseconds
 const int ELECTION_TIMEOUT_LOWER_BOUND = 5000;
@@ -228,15 +228,37 @@ void Server::handler_ClientCommand(const ClientRequest &cr) {
     std::string command = cr.command();
     std::cerr << _server_id << ": LEADER RECEIVED CLIENT COMMAND -> " << command << "\n";
 
+
+
+    std::thread th(&Server::process_command_routine, this, command, client_addr);
+    th.detach();
+
+    // append entry to local log
+    // execute bash command, send RPC response to client w/ result
+}
+
+// https://stackoverflow.com/questions/478898/how-do-i-execute-a-command-and-get-the-output-of-the-command-within-c-using-po
+void Server::process_command_routine(std::string cmd, sockaddr_in client_addr) {
+    std::string result;
+    std::array<char, 128> buf;
+    std::string bash_cmd = "bash -c \"" + cmd + "\"";
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(bash_cmd.c_str(), "r"), pclose);
+    if (!pipe) {
+        std::cerr << "popen() failed!\n";
+        return;
+    }
+    while (fgets(buf.data(), buf.size(), pipe.get()) != nullptr) {
+        result += buf.data();
+    }
+
+    // Send reply to client with result of running command
     RPC rpc;
     ClientRequest *cr_reply = new ClientRequest();
     cr_reply->set_success(true);
     cr_reply->set_leader_id(_last_observed_leader_id);
+    cr_reply->set_output(result);
     rpc.set_allocated_clientrequest_message(cr_reply);
     _messenger.sendMessageToClient(client_addr, rpc.SerializeAsString());
-
-    // append entry to local log
-    // execute bash command, send RPC response to client w/ result
 }
 
 // Trigger an election by sending RequestVote RPCs to all other servers.

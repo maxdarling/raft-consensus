@@ -66,6 +66,7 @@ class Server {
     void handler_ClientCommand(const ClientRequest &cr);
     bool try_election();
     void apply_log_entries();
+    void process_command_routine(std::string command, sockaddr_in client_addr);
 
     // send RPC to all servers in cluster
     void send_RPC(const RPC &rpc);

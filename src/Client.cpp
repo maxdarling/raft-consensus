@@ -7,6 +7,8 @@ Client::Client(const sockaddr_in &clientAddr, const unordered_map<int, sockaddr_
       _addr(ntohs(clientAddr.sin_addr.s_addr)),
       _port(ntohs(clientAddr.sin_port)) {}
 
+void Client::run() {}
+
 std::string Client::executeCommand(std::string command) {
     std::string serializedRequest;
     {
@@ -38,8 +40,5 @@ std::string Client::executeCommand(std::string command) {
         std::cout << "we should go to " << _leaderID << "\n";
     } while (!server_response.clientrequest_message().success());
 
-    // server_response.clientrequest_message().output() stores the output here
-    std::cout << "GREAT SUCCESS!\n";
-
-    return {};
+    return server_response.clientrequest_message().output();
 }
