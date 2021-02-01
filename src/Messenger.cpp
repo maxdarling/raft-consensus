@@ -10,6 +10,8 @@ using std::endl;
 
 const static int SHADOW_MESSAGE_ID = -190;
 
+bool sockaddr_in_cmp(const sockaddr_in a, const sockaddr_in b);
+
 /** 
  * ~ Implementation Notes ~
  * 
@@ -96,6 +98,7 @@ Messenger::Messenger(const int serverId, const unordered_map<int, struct sockadd
                      bool isClient, int clientPort) {
     _serverId = serverId;
     _serverIdToAddr = serverList;
+    _clientAddrToFd = map<sockaddr_in, int, decltype(sockaddr_in_cmp)*>(&sockaddr_in_cmp);
 
     // start a networker on our assigned port
     int port = (isClient) ? clientPort : ntohs(_serverIdToAddr[_serverId].sin_port);
@@ -150,16 +153,17 @@ Messenger::~Messenger() {
 }
 
 /**
- * Send a message to the specified server. 
+ * Send a message to the specified messenger. Returns true if the message was
+ * sent successfully.  
  * 
  * Errors and closed connections are dealt with automatically.  
  */
-void Messenger::_sendMessage(const int serverId, std::string message, bool isShadowMsg,
-                             bool isIntendedForClient, int clientConnFd) {
+bool Messenger::_sendMessage(const int serverId, std::string message, bool isShadowMsg,
+                             bool isIntendedForClient, sockaddr_in clientAddr) {
     // for now: only manage closed connections for servers, not clients
     if (!isIntendedForClient && _closedConnections.count(serverId)) {
         cout << "sendMessage(): server #" << serverId << " is bogus, or we closed it" << endl;
-        return;
+        return false;
     }
 
     // serialize message and its length
@@ -173,121 +177,91 @@ void Messenger::_sendMessage(const int serverId, std::string message, bool isSha
     if (n != sizeof(len)) {
         cout << "sendMessage failed, closing conn to server #" << serverId << endl;
         if (isIntendedForClient) {
-            //close(_clientAddrToFd[clientAddr]);
-            close(clientConnFd);
+            close(_clientAddrToFd[clientAddr]);
         } else {
             close(_serverIdToFd[serverId]);
             _closedConnections.insert(serverId);
         }
-        return;
+        return false;
     }
     n = _networker->sendAll(connfd, message.c_str(), message.length());
     if (n != message.length()) {
         cout << "sendMessage failed, closing conn to server #" << serverId << endl;
         if (isIntendedForClient) {
-            //close(_clientAddrToFd[clientAddr]);
-            close(clientConnFd);
+            close(_clientAddrToFd[clientAddr]);
         } else {
             close(_serverIdToFd[serverId]);
             _closedConnections.insert(serverId);
         }
-        return;
+        return false;
     }
+    return true;
 }
 
 
 /**
- * public version of '_sendMessage()', without shadow messages. 
+ * public version of '_sendMessage()', without shadow messages. Returns true if
+ * the message was sent successfully. 
  * 
  * Note: the method is wrapped to prevent information leakage. We want
  * Messengers to additionally USE the message-sending functionality they
  * publicly implement, but for internal purposes (ie. shadow messages).
  */
-void Messenger::sendMessage(const int serverId, std::string message) {
-    _sendMessage(serverId, message, false, false, {});
+bool Messenger::sendMessage(const int serverId, std::string message) {
+    return _sendMessage(serverId, message, false, false, {});
 }
 
 /**
- * Message sending interface for the client. 
+ * Message sending interface for the client. Returns true if the 
+ * message was sent successfully. 
  * 
- * serverId corresponds to an entry in the server list. Since the client
- * does not connect to all other messenger nodes in the constructor, we 
- * manage those connections here. If 'serverId' is not found in our map of current
- * connections, a connection is made and saved. 
+ * This method also handles network connections automatically, since the client
+ * doesn't connect in the constructor. 
  * 
- * Max: same thing as send message, just need to manage connections before. also, 
- * I think the connection closing logic applies to the client, too, so we're happy
- * to let _sendMessage close our shit and remove from the map. 
+ * Note: instead of shadow messages, this method has the client handle crashed
+ * servers by simply re-attempting to connect. 
  */
-void Messenger::sendMessageToServer(const int serverId, std::string message) {
-    // if no connection exists, make one
-    if (!_serverIdToFd.count(serverId)) {
+bool Messenger::sendMessageToServer(const int serverId, std::string message) {
+    // if no connection exists, or it's been closed before, attempt to create one
+    if (!_serverIdToFd.count(serverId) || _closedConnections.count(serverId)) {
         int connfd = _networker->establishConnection(_serverIdToAddr[serverId]);
-        assert(connfd != -1);
+        if (connfd == -1) {
+            cout << "sendMessageToServer(): couldn't connect to server #" << serverId << endl;
+            return false;
+        }
         _serverIdToFd[serverId] = connfd;
+        _closedConnections.erase(serverId);
     }
 
-    // nothing else needed here: we're fine with our shit getting closed.
-    // todo: perhaps give a return value so that the client app knows to 
-    // try the next server in the server list if this one is dead... 
-    _sendMessage(serverId, message, false, false, {});
+    return _sendMessage(serverId, message, false, false, {});
 }
 
 
 /**
- * Message sending interface for servers to clients. 
- * 
+ * Message sending interface for servers to clients. Returns true if the 
+ * message was sent successfully. 
+ *  
  * Raft servers will parse out the client's addr, and use this method to 
  * send back to it. Outbound connections will be made inside this method. 
  * Also, we want to reuse sockets, so we'll store the fd's returned by 
  * establishConnection with the client. 
  * 
- * Summary: same as sendMessageToServer, but we have different map. 
- * Connection closing may also apply, no worries! 
- * 
- * Idea: perhaps we should just assign arbitrary negative serverIds to the 
- * clients, letting us re-use the _serverIdToFd map logic inside _sendMessage. 
- *  ^meh, perhaps not worth it. a separate map for clients is better. 
- * 
- * No, I think going in terms of IDs here is good. If we want a 'closedConnections' 
- * data structure, the keys can't be mixed sockaddr / serverId. We could introduce another
- * map, but that's extra logic to check in _sendMessage. 
- *
- * Actually, nah it's a bit confusing. "non-obvious". we could just do 'closedServerConns'
- * and 'closedPeerConns', right? 
- * 
- * Or wait, do we even have to manage this map for the server->peer? Not many messages will
- * be sent (only as reponses. ).  
- * 
- * Yes, for now, let's go lazy on this. We'll opt to not close any client conns.  
+ * Note: currently we don't have a '_closedConnections' equivalent for client
+ * addresses, but hopefully it's not needed? It probably isn't for raft, but 
+ * is for this class. We should test that.   
  */ 
-void Messenger::sendMessageToClient(const sockaddr_in clientAddr, std::string message) {
-    // if (!_clientAddrToFd.count(clientAddr)) {
-    //     int connfd = _networker->establishConnection(clientAddr);
-    //     assert(connfd != -1);
-    //     _clientAddrToFd[clientAddr] = connfd;  
-    // }
-
-    // above broken b/c can't get hash on 'sockaddr_in' to work; using vec approach
-    bool found = false;
-    int connfd;
-    for (auto &elem : _clientAddrAndFds) {
-        if (clientAddr.sin_port == elem.clientAddr.sin_port && 
-            clientAddr.sin_addr.s_addr == elem.clientAddr.sin_addr.s_addr) {
-                found = true;
-                connfd = elem.connfd;
-                break;
+bool Messenger::sendMessageToClient(const sockaddr_in clientAddr, std::string message) {
+    if (!_clientAddrToFd.count(clientAddr)) {
+        int connfd = _networker->establishConnection(clientAddr);
+        if (connfd == -1) {
+            cout << "sendMessageToClient(): couldn't connect to client " << endl;
+            return false;
         }
+        _clientAddrToFd[clientAddr] = connfd;  
     }
-    if (!found) { 
-        connfd = _networker->establishConnection(clientAddr);
-        assert(connfd != -1);
-        //_clientAddrToFd[clientAddr] = connfd;  
-        _clientAddrAndFds.push_back({clientAddr, connfd});
-    }
+
     // we need to let '_sendMessage' know to not use serverId's, but use our 'clientAddr' 
-    // (and for the meantime, not add to something like closedPeerConnections)
-    _sendMessage(-1, message, false, true, connfd /*clientAddr*/);
+    return _sendMessage(-1, message, false, true, clientAddr);
 }
 
 
@@ -295,7 +269,6 @@ void Messenger::sendMessageToClient(const sockaddr_in clientAddr, std::string me
  * Return a message if one is available.
  */
 std::optional<std::string> Messenger::getNextMessage() {
-    // check the message queue 
     std::lock_guard<std::mutex> lock(_m);
     if (_messageQueue.empty()) {
         return std::nullopt;
@@ -303,4 +276,13 @@ std::optional<std::string> Messenger::getNextMessage() {
     std::string message = _messageQueue.front();
     _messageQueue.pop();
     return message;
+}
+
+
+// custom comparator for '_clientAddrToFd' map
+bool sockaddr_in_cmp(const sockaddr_in a, const sockaddr_in b) {
+    if (a.sin_port != b.sin_port) {
+        return a.sin_port < b.sin_port;
+    }
+    return a.sin_addr.s_addr < b.sin_addr.s_addr;
 }

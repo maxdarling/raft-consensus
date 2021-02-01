@@ -52,7 +52,7 @@ bool Timer::has_expired() {
 
 // SERVER CONSTRUCTOR
 Server::Server(const int server_id, const unordered_map<int, struct sockaddr_in>& cluster_info) 
-    : _messenger(server_id, cluster_info), 
+    : _messenger(server_id, cluster_info, false, -1), 
       _election_timer(ELECTION_TIMEOUT_LOWER_BOUND, ELECTION_TIMEOUT_UPPER_BOUND), 
       _heartbeat_timer(HEARTBEAT_TIMEOUT),
       _server_id(server_id),

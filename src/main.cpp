@@ -97,7 +97,7 @@ void MessengerTester(int serverNumber) {
     }
 
     // start Messenger
-    Messenger messenger(serverNumber, serverList);
+    Messenger messenger(serverNumber, serverList, false, -1);
 
     // send messages
     int n_messages_sent = 0;
