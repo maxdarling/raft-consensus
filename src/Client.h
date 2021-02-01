@@ -7,4 +7,7 @@ class Client {
 
   private:
     Messenger _messenger;
+    unsigned int _addr;
+    int _port;
+    int _leaderID {1};
 };

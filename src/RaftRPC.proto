@@ -9,8 +9,6 @@ message AppendEntries {
     // request fields
     int32 term = 2;
     int32 leader_id = 3;
-
-    // response fields
 }
 
 
@@ -28,6 +26,13 @@ message RequestVote {
 
 message ClientRequest {
     string command = 1;
+    uint32 client_addr = 2;
+    int32 client_port = 3;
+
+    // response fields
+    bool success = 4;
+    int32 leader_id = 5;
+    string output = 6;
 }
 
 message RPC {

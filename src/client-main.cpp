@@ -6,7 +6,6 @@ const int SERVER_PORT_BASE = 5000;
 
 int main(int argc, char* argv[]) {
     // TODO(ali): error checking here
-
     // define the server list
     sockaddr_in addr;
     memset(&addr, '0', sizeof(addr));
@@ -27,7 +26,7 @@ int main(int argc, char* argv[]) {
     }
 
     Client c(addr, clusterInfo);
-    c.executeCommand("");
+    c.executeCommand(argv[1]);
 
     return 0;
 }

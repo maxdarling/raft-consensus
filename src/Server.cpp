@@ -127,6 +127,11 @@ void Server::RPC_handler(const RPC &rpc) {
         if (ae.term() == _current_term) _election_timer.start();
         handler_AppendEntries(ae);
     }
+
+    else if (rpc.has_clientrequest_message()) {
+        const ClientRequest &cr = rpc.clientrequest_message();
+        handler_ClientCommand(cr);
+    }
 }
 
 // Execute the RAFT server rules for a leader:
@@ -171,7 +176,10 @@ void Server::handler_AppendEntries(const AppendEntries &ae) {
         ae_reply->set_term(_current_term);
         rpc.set_allocated_appendentries_message(ae_reply);
         send_RPC(rpc, ae.leader_id());
+        return;
     }
+
+    _last_observed_leader_id = ae.leader_id();
 }
 
 // Process and reply to RequestVote RPCs from leader.
@@ -199,14 +207,35 @@ void Server::handler_RequestVote(const RequestVote &rv) {
 
 // Append a command from the client to the local log, then send RPC response
 // with the result of executing the command.
-void Server::handler_ClientCommand() {
-    // if (!_leader) {
-        // send RPC response to client w/ address of leader
-        // return;
-    // }
+void Server::handler_ClientCommand(const ClientRequest &cr) {
+    sockaddr_in client_addr;
+    memset(&client_addr, '0', sizeof(client_addr));
+    client_addr.sin_family = AF_INET; // use IPv4
+    client_addr.sin_addr.s_addr = htons(cr.client_addr()); // use local IP
+    client_addr.sin_port = htons(cr.client_port());
+
+    if (!_leader) {
+        RPC rpc;
+        ClientRequest *cr_reply = new ClientRequest();
+        cr_reply->set_success(false);
+        cr_reply->set_leader_id(_last_observed_leader_id);
+        rpc.set_allocated_clientrequest_message(cr_reply);
+        _messenger.sendMessageToClient(client_addr, rpc.SerializeAsString());
+        std::cerr << _server_id << ": RECEIVED CLIENT COMMAND, routing to " << _last_observed_leader_id << "\n";
+        return;
+    }
+
+    std::string command = cr.command();
+    std::cerr << _server_id << ": LEADER RECEIVED CLIENT COMMAND -> " << command << "\n";
+
+    RPC rpc;
+    ClientRequest *cr_reply = new ClientRequest();
+    cr_reply->set_success(true);
+    cr_reply->set_leader_id(_last_observed_leader_id);
+    rpc.set_allocated_clientrequest_message(cr_reply);
+    _messenger.sendMessageToClient(client_addr, rpc.SerializeAsString());
 
     // append entry to local log
-
     // execute bash command, send RPC response to client w/ result
 }
 
@@ -264,6 +293,7 @@ bool Server::try_election() {
         if (votes > _cluster_list.size() / 2) {
             std::cerr << _server_id << ": election won\n";
             _leader = true;
+            _last_observed_leader_id = _server_id;
             // reinit nextIndex[] and matchIndex[]
             _heartbeat_timer.mark_as_expired();
             return true;

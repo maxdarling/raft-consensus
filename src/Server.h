@@ -47,6 +47,7 @@ class Server {
 
     // ADDITIONAL STATE
     bool _leader {false};
+    int _last_observed_leader_id {1};
 
     // UTIL
     Messenger _messenger;
@@ -62,7 +63,7 @@ class Server {
     void leader_tasks();
     void handler_AppendEntries(const AppendEntries &ae);
     void handler_RequestVote(const RequestVote &rv);
-    void handler_ClientCommand();
+    void handler_ClientCommand(const ClientRequest &cr);
     bool try_election();
     void apply_log_entries();
 

@@ -59,3 +59,4 @@ target_link_libraries(run_client ${Protobuf_LIBRARIES})
 # so we can include generated protobuf headers
 target_include_directories(${PROJECT_NAME} PUBLIC build)
 target_include_directories(run_server PUBLIC build)
+target_include_directories(run_client PUBLIC build)
