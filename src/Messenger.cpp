@@ -172,7 +172,7 @@ bool Messenger::_sendMessage(const int serverId, std::string message, bool isSha
     len = htonl(len); // convert to network order before sending
 
     // send the message length, then the message itself
-    int connfd = _serverIdToFd[serverId];
+    int connfd = (isIntendedForClient) ? _clientAddrToFd[clientAddr] : _serverIdToFd[serverId];
     int n = _networker->sendAll(connfd, &len, sizeof(len));
     if (n != sizeof(len)) {
         cout << "sendMessage failed, closing conn to server #" << serverId << endl;
