@@ -155,9 +155,9 @@ Messenger::~Messenger() {
  * Errors and closed connections are dealt with automatically.  
  */
 bool Messenger::_sendMessage(const int serverId, std::string message, 
-                             bool isShadowMsg = false,
-                             bool isIntendedForClient = false, 
-                             sockaddr_in clientAddr = {}) {
+                             bool isShadowMsg,
+                             bool isIntendedForClient, 
+                             sockaddr_in clientAddr) {
     // for now: only manage closed connections for servers, not clients
     if (!isIntendedForClient && _closedConnections.count(serverId)) {
         return false;
