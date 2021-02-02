@@ -9,10 +9,14 @@ Setup Instructions:
 
 
 Usage Instructions: 
-- To start a raft server, run './build/raft N' where 'N' is the server number
-- Repeat this as many times as desired, using distinct server numbers
-- The servers will connect to one another automatically. 
-- Client requests: [coming soon]
+  - Configure the 'server_list' to your liking. Each line corresponds to an 
+  expected messenger instance, and contains <IP, port> pairs, where '0'
+  corresponds to the local IP.  
+  - To start a raft server, run './build/raft_server N' where 'N' is an untaken
+    server number in the server list. 
+  -To start a raft client, [Ali todo]
+
+
 
 CITATIONS
 - Code for executing bash command in Server::process_command_routine sourced from https://stackoverflow.com/questions/478898/how-do-i-execute-a-command-and-get-the-output-of-the-command-within-c-using-po
