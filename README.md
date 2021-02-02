@@ -14,3 +14,5 @@ Usage Instructions:
 - The servers will connect to one another automatically. 
 - Client requests: [coming soon]
 
+CITATIONS
+- Code for executing bash command in Server::process_command_routine sourced from https://stackoverflow.com/questions/478898/how-do-i-execute-a-command-and-get-the-output-of-the-command-within-c-using-po

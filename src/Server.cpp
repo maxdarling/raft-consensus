@@ -1,5 +1,4 @@
 #include "Server.h"
-#include <iostream>
 #include <array>
 #include <fstream>   // for ifstream, ofstream
 
@@ -17,17 +16,17 @@ Server::Server(const int server_id,
     const unordered_map<int, sockaddr_in>& cluster_info) 
     : _messenger(server_id, cluster_info), 
       _election_timer(ELECTION_TIMEOUT_LOWER_BOUND,
-        ELECTION_TIMEOUT_UPPER_BOUND), 
+                      ELECTION_TIMEOUT_UPPER_BOUND), 
       _heartbeat_timer(HEARTBEAT_TIMEOUT),
       _server_id(server_id),
       _recovery_fname("server" + std::to_string(_server_id) + "_state"),
       _cluster_list(cluster_info.size()) {
-    // populate _cluster_list with IDs of servers in cluster
+    // Populate _cluster_list with IDs of servers in cluster
     transform(cluster_info.begin(), cluster_info.end(), _cluster_list.begin(), 
         [] (auto pair) { return pair.first; }
     );
 
-    // if a server state recovery file exists, assume we have crashed and must
+    // If a server state recovery file exists, assume we have crashed and must
     // now recover persistent state variables from this file
     std::ifstream ifs(_recovery_fname, std::ios::binary);
     if (ifs) {
@@ -59,7 +58,7 @@ void Server::run() {
  * correct handler.
  */
 void Server::RPC_handler(const RPC &rpc) {
-    // update persistent state variables on disk
+    // Update persistent state variables on disk
     std::ofstream ofs(_recovery_fname, std::ios::trunc | std::ios::binary);
     ServerPersistentState sps;
     sps.set_current_term(_current_term);
@@ -69,8 +68,6 @@ void Server::RPC_handler(const RPC &rpc) {
     }
     sps.SerializeToOstream(&ofs);
     ofs.close();
-
-    // route RPC to correct handler
 
     if (rpc.has_requestvote_message()) {
         const RequestVote &rv = rpc.requestvote_message();
@@ -121,7 +118,7 @@ void Server::leader_tasks() {
  * Process and reply to AppendEntries RPCs from leader.
  */
 void Server::handler_AppendEntries(const AppendEntries &ae) {
-    // reject stale requests
+    // CASE: reject stale request
     if (ae.term() < _current_term) {
         RPC rpc;
         AppendEntries *ae_reply = new AppendEntries();
@@ -158,8 +155,10 @@ void Server::handler_RequestVote(const RequestVote &rv) {
     send_RPC(rpc, rv.candidate_id());
 }
 
-// Append a command from the client to the local log, then send RPC response
-// with the result of executing the command.
+/**
+ * Append a command from the client to the local log (proj2), then send RPC
+ * response with the result of executing the command.
+ */  
 void Server::handler_ClientCommand(const ClientRequest &cr) {
     sockaddr_in client_addr;
     memset(&client_addr, '0', sizeof(client_addr));
@@ -167,6 +166,8 @@ void Server::handler_ClientCommand(const ClientRequest &cr) {
     client_addr.sin_addr.s_addr = htons(cr.client_addr()); // use local IP
     client_addr.sin_port = htons(cr.client_port());
 
+    // CASE: we're not the leader, so send response to client with ID of the
+    // last leader we observed
     if (!_leader) {
         RPC rpc;
         ClientRequest *cr_reply = new ClientRequest();
@@ -174,24 +175,20 @@ void Server::handler_ClientCommand(const ClientRequest &cr) {
         cr_reply->set_leader_id(_last_observed_leader_id);
         rpc.set_allocated_clientrequest_message(cr_reply);
         _messenger.sendMessageToClient(client_addr, rpc.SerializeAsString());
-        std::cerr << _server_id << ": RECEIVED CLIENT COMMAND, routing to " << _last_observed_leader_id << "\n";
         return;
     }
 
-    std::string command = cr.command();
-    std::cerr << _server_id << ": LEADER RECEIVED CLIENT COMMAND -> " << command << "\n";
-
-
-
-    std::thread th(&Server::process_command_routine, this, command, client_addr);
+    // Execute command on its own thread so we don't block
+    std::thread th(&Server::process_command_routine, 
+        this, cr.command(), client_addr);
     th.detach();
-
-    // append entry to local log
-    // execute bash command, send RPC response to client w/ result
 }
 
-// https://stackoverflow.com/questions/478898/how-do-i-execute-a-command-and-get-the-output-of-the-command-within-c-using-po
+/**
+ * Execute cmd string via bash and send response to client with the output.
+ */
 void Server::process_command_routine(std::string cmd, sockaddr_in client_addr) {
+    // See README for a citation for this code snippet
     std::string result;
     std::array<char, 128> buf;
     std::string bash_cmd = "bash -c \"" + cmd + "\"";
@@ -214,17 +211,18 @@ void Server::process_command_routine(std::string cmd, sockaddr_in client_addr) {
     _messenger.sendMessageToClient(client_addr, rpc.SerializeAsString());
 }
 
-// Trigger an election by sending RequestVote RPCs to all other servers.
-// RETURN: true if a new leader is elected, false otherwise
+/**
+ * Trigger an election by sending RequestVote RPCs to all other servers.
+ *  Return true if a new leader is elected, false otherwise.
+ */
 bool Server::try_election() {
-    std::cerr << _server_id << ": starting election\n";
     ++_current_term;
     int votes = 1; // vote for self
     _vote = {_current_term, _server_id};
     
     _election_timer.start();
 
-    // send RequestVote RPC to all other servers
+    // Send RequestVote RPC to all other servers
     RPC rpc;
     RequestVote *rv = new RequestVote();
     rv->set_is_request(true);
@@ -234,52 +232,47 @@ bool Server::try_election() {
     send_RPC(rpc);
 
     for (;;) {
-        if (_election_timer.has_expired()) {
-            std::cerr << _server_id << ": election timer expired; trying again\n";
-            return false;
-        }
+        if (_election_timer.has_expired()) return false;
 
         std::optional<RPC> rpc_received_opt = receive_RPC();
         if (!rpc_received_opt) continue;
 
         if (rpc_received_opt->has_requestvote_message()) {
-            const RequestVote &rv_received = rpc_received_opt->requestvote_message();
-            // CASE: different server is also running an election; respond to their request
-            if (rv_received.is_request()) {
-                std::cerr << _server_id << ": received RequestVote from " << rv_received.candidate_id() << " in election\n";
-                RPC_handler(*rpc_received_opt);
-            }
-            else if (rv_received.vote_granted()) {
-                std::cerr << _server_id << ": received vote\n";
-                votes++;
-            }
-            else std::cerr << _server_id << ": received declined vote\n";
+            const RequestVote &rv_received = 
+                rpc_received_opt->requestvote_message();
+
+            // CASE: different server is also running an election; 
+            // respond to their request
+            if (rv_received.is_request()) RPC_handler(*rpc_received_opt);
+            else if (rv_received.vote_granted()) votes++;
         }
 
         // CASE: received an RPC message other than RequestVote
         else {
-            std::cerr << _server_id << ": received non-RequestVote RPC in election\n";
             RPC_handler(*rpc_received_opt);
-            // CASE: different server has been elected leader and sent AppendEntries RPC
+            // CASE: different server has been elected leader and sent 
+            // AppendEntries RPC
             if (rpc_received_opt->has_appendentries_message()) return true;
         }
         
         // CASE: election won
         if (votes > _cluster_list.size() / 2) {
-            std::cerr << _server_id << ": election won\n";
             _leader = true;
             _last_observed_leader_id = _server_id;
-            // reinit nextIndex[] and matchIndex[]
             _heartbeat_timer.mark_as_expired();
             return true;
         }
     }
 }
 
-// Execute commands from log until _last_applied == _commit_index.
+/**
+ * Execute commands from log until _last_applied == _commit_index (proj2).
+ */ 
 void Server::apply_log_entries() {}
 
-// Send RPC to all other servers in the cluster.
+/**
+ * Send RPC to all other servers in the cluster.
+ */
 void Server::send_RPC(const RPC &rpc) {
     for (int server_id : _cluster_list) {
         if (server_id == _server_id) continue;
@@ -287,13 +280,17 @@ void Server::send_RPC(const RPC &rpc) {
     }
 }
 
-// Send RPC to a specific server in the cluster.
+/**
+ * Send RPC to a specific server in the cluster.
+ */ 
 void Server::send_RPC(const RPC &rpc, int server_id) {
     std::string rpc_str = rpc.SerializeAsString();
     _messenger.sendMessageToServer(server_id, rpc_str);
 }
 
-// Return an RPC if one has been received.
+/**
+ * Returns an RPC if one has been received.
+ */ 
 std::optional<RPC> Server::receive_RPC() {
     std::optional<std::string> msg_opt = _messenger.getNextMessage();
     if (!msg_opt) return std::nullopt;
