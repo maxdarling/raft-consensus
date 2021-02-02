@@ -30,6 +30,7 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
+    std::cout << "SERVER #" << serverNumber << " NOW RUNNING\n";
     Server s(serverNumber, clusterInfo);
     s.run();
 
