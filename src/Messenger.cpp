@@ -89,8 +89,6 @@ void Messenger::collectMessagesRoutine() {
  * Server constructor. 
  * Establishes connections to all other messenger servers in the given list.
  * Waits indefinitely until all outgoing connections are established. 
- * 
- * Note: 'clientPort' should be in host-byte order. 
  */
 Messenger::Messenger(const int serverId, const unordered_map<int, struct sockaddr_in>& serverList) {
     _isClient = false;
@@ -121,7 +119,7 @@ Messenger::Messenger(const int serverId, const unordered_map<int, struct sockadd
             int msg = htonl(_serverId); 
             char buf [4];
             memcpy(buf, &msg, sizeof(msg));
-            _sendMessage(peerId, std::string(buf, sizeof(buf)), true, false, {});
+            _sendMessage(peerId, std::string(buf, sizeof(buf)), true);
         }
     }
     cout << "Outbound connections completed on server " << _serverId << endl;
@@ -160,8 +158,8 @@ Messenger::~Messenger() {
  * 
  * Errors and closed connections are dealt with automatically.  
  */
-bool Messenger::_sendMessage(const int serverId, std::string message, bool isShadowMsg,
-                             bool isIntendedForClient, sockaddr_in clientAddr) {
+bool Messenger::_sendMessage(const int serverId, std::string message, bool isShadowMsg = false,
+                             bool isIntendedForClient = false, sockaddr_in clientAddr = {}) {
     // for now: only manage closed connections for servers, not clients
     if (!isIntendedForClient && _closedConnections.count(serverId)) {
         cout << "sendMessage(): server #" << serverId << " is bogus, or we closed it" << endl;
@@ -190,17 +188,11 @@ bool Messenger::_sendMessage(const int serverId, std::string message, bool isSha
 
 
 /**
- * Message sending interface for the client. Returns true if the 
- * message was sent successfully. 
- * 
- * This method also handles making the necessary network connections, since the
- * client doesn't connect in the constructor.
- * 
- * Note: instead of shadow messages, this method has the client handle crashed
- * servers by simply re-attempting to connect. 
+ * Send a message to a server, as a server OR client. Returns true if the 
+ * message was sent successfully.
  */
 bool Messenger::sendMessageToServer(const int serverId, std::string message) {
-    // client case: if no connection exists, or it's been closed before, attempt to create one
+    /* client case: client network connections are made here on-demand */
     if (_isClient && !_serverIdToFd.count(serverId) || _closedConnections.count(serverId)) {
         int connfd = _networker->establishConnection(_serverIdToAddr[serverId]);
         if (connfd == -1) {
@@ -211,13 +203,16 @@ bool Messenger::sendMessageToServer(const int serverId, std::string message) {
         _closedConnections.erase(serverId);
     }
 
-    return _sendMessage(serverId, message, false, false, {});
+    return _sendMessage(serverId, message);
 }
 
 
 /**
- * Message sending interface for servers to clients. Returns true if the 
+ * Send a message as a server to a client. Returns true if the 
  * message was sent successfully. 
+ * 
+ * Note: theoretically, messages may be sent between clients, although not 
+ * initially intended. 
  */ 
 bool Messenger::sendMessageToClient(const sockaddr_in clientAddr, std::string message) {
     if (!_clientAddrToFd.count(clientAddr)) {
@@ -229,7 +224,7 @@ bool Messenger::sendMessageToClient(const sockaddr_in clientAddr, std::string me
         _clientAddrToFd[clientAddr] = connfd;  
     }
 
-    return _sendMessage(-1, message, false, true, clientAddr);
+    return _sendMessage(0, message, false, true, clientAddr);
 }
 
 
