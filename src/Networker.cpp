@@ -163,14 +163,12 @@ int Networker::sendAll(const int connfd, const void* buf, const int length) {
          */
         int checkEOF = recv(connfd, nullptr, 1, MSG_DONTWAIT);
         if (checkEOF == 0) {
-            cout << "EOF detected in sendAll()" << endl;
             return -1;
         }
         // flag: disable error signal handling for this call. 
         int n = send(connfd, (char *)buf + bytesWritten, 
                      length - bytesWritten, MSG_NOSIGNAL);
         if (n < 0) {
-            cout << "sendAll() failed (but connection wasn't closed)" << endl;
             return -1; 
         }
         bytesWritten += n;
