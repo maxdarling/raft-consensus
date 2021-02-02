@@ -1,47 +1,45 @@
+// Google Protocol Buffers used for RPCs between servers and clients.
 syntax = "proto3";
-
-// package RPC;
-
 
 message AppendEntries {
     bool is_request = 1;
 
-    // request fields
+    // Request fields
     int32 term = 2;
     int32 leader_id = 3;
 }
 
-
 message RequestVote {
     bool is_request = 1;
 
-    // request fields
+    // Request fields
     int32 term = 2;
     int32 candidate_id = 3;
 
-    // response fields
+    // Response fields
     bool vote_granted = 4;
 }
 
-
 message ClientRequest {
+    // Request fields (client)
     string command = 1;
     uint32 client_addr = 2;
     int32 client_port = 3;
 
-    // response fields
+    // Response fields (server)
     bool success = 4;
     int32 leader_id = 5;
     string output = 6;
 }
 
 message RPC {
-    /* message instances */ 
+    // Message instances
     AppendEntries AppendEntries_message = 1;
     RequestVote RequestVote_message = 2;
     ClientRequest ClientRequest_message = 3;
 }
 
+// For server writing their persistent state variables to file.
 message ServerPersistentState {
     int32 current_term = 1;
     int32 term_voted = 2;
