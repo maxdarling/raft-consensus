@@ -41,8 +41,8 @@ class Messenger {
         // should these be defined in here, too, or only in the source file?
         void collectMessagesRoutine();
         bool _sendMessage(const int serverId, std::string message, 
-                          bool isShadow, bool isIntendedForClient, 
-                          sockaddr_in clientAddr);
+                          bool isShadow = false, bool isIntendedForClient = false, 
+                          sockaddr_in clientAddr = {});
 
         /* distinguish server instances from client ones */
         bool _isClient;

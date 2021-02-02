@@ -45,7 +45,7 @@ class Networker {
         std::mutex _m;
 
         /* table of polled file descriptors */
-        pollfd* _pfds;
+        struct pollfd* _pfds;
         int _pfds_size; 
         int _pfds_capacity;
 
