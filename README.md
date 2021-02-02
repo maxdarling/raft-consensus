@@ -22,9 +22,9 @@ Terminating the RAFT cluster:
 
 Happy RAFTing!
 
-ADVANCED FEATURES
+Advanced features:
 - If you want to specify a custom server address list located `at/some/path`, you can pass that path as the second argument to both `raft_server` and `raft_client`.
 
-CITATIONS
+Citations:
 - Code for executing bash command in Server::process_command_routine sourced from: 
 https://stackoverflow.com/questions/478898/how-do-i-execute-a-command-and-get-the-output-of-the-command-within-c-using-po
