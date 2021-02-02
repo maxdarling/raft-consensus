@@ -2,30 +2,25 @@
 #include <iostream>
 
 const int CLIENT_PORT = 3030;
-const int SERVER_PORT_BASE = 5000;
 
 int main(int argc, char* argv[]) {
-    // TODO(ali): error checking here
-    // define the server list
+    std::string serverFilePath = argc == 2? argv[1] : DEFAULT_SERVER_FILE_PATH;
+
+    unordered_map<int, sockaddr_in> clusterInfo = 
+        parseClusterInfo(serverFilePath);
+    if (clusterInfo.empty()) {
+        std::cerr << "Invalid server address list! Either the file is "
+            "improperly formatted, or the custom path to the file is wrong, or "
+            "the default server_list has been deleted/moved/corrupted. See "
+            "README for details.\n";
+        return EXIT_FAILURE;
+    }
+    
     sockaddr_in addr;
     memset(&addr, '0', sizeof(addr));
-    addr.sin_family = AF_INET; // use IPv4
-    addr.sin_addr.s_addr = INADDR_ANY; // use local IP
-    addr.sin_port = htons(CLIENT_PORT);
-
-    // explicit initialization because loop version is less easy to visualize
-    unordered_map<int, sockaddr_in> clusterInfo {
-        {1, addr},
-        {2, addr},
-        {3, addr},
-        {4, addr},
-        {5, addr}
-    };
-
-    // overwrite with correct server port numbers
-    for (auto it = clusterInfo.begin(); it != clusterInfo.end(); ++it) {
-        it->second.sin_port = htons(SERVER_PORT_BASE + it->first);
-    }
+    addr.sin_family      = AF_INET;     // use IPv4
+    addr.sin_addr.s_addr = INADDR_ANY;  // use local IP
+    addr.sin_port        = htons(CLIENT_PORT);
 
     Client c(addr, clusterInfo);
     c.run();

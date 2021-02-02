@@ -26,28 +26,28 @@ set(SERVER_SRCS
   src/Server.cpp
   src/Messenger.cpp
   src/Networker.cpp
-  src/Timer.cpp
+  src/util.cpp
   ${PROTO_SRCS})
 
 set(SERVER_HDRS
   src/Server.h
   src/Messenger.h
   src/Networker.h
-  src/Timer.h
+  src/util.h
   ${PROTO_HDRS})
 
 set(CLIENT_SRCS
   src/Client.cpp
   src/Messenger.cpp
   src/Networker.cpp
-  src/Timer.cpp
+  src/util.cpp
   ${PROTO_SRCS})
 
 set(CLIENT_HDRS
   src/Client.h
   src/Messenger.h
   src/Networker.h
-  src/Timer.h
+  src/util.h
   ${PROTO_HDRS})
 
 # add the executables

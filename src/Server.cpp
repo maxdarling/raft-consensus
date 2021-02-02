@@ -1,7 +1,7 @@
 #include "Server.h"
 #include <iostream>
 #include <array>
-#include <fstream>   // for fstream
+#include <fstream>   // for ifstream, ofstream
 
 // in milliseconds
 const int ELECTION_TIMEOUT_LOWER_BOUND = 5000;

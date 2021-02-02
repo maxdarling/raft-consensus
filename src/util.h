@@ -1,5 +1,10 @@
+#include <string>
 #include <optional>
 #include <chrono>
+#include <unordered_map>
+#include <netinet/in.h>  // for sockaddr_in
+
+const std::string DEFAULT_SERVER_FILE_PATH = "../server_list";
 
 class Timer {
   public:
@@ -18,3 +23,5 @@ class Timer {
     std::optional<int> _lower_bound;
     std::optional<int> _upper_bound;    
 };
+
+std::unordered_map<int, sockaddr_in> parseClusterInfo(std::string serverFilePath);
