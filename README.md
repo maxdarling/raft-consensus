@@ -7,7 +7,11 @@ Setup Instructions:
 - Next, compile with 'make -C ./build'
 
 Configure the IP addresses & ports of the servers in your RAFT cluster:
-- By default, `server_list`
+- By default, RAFT clients & servers will parse the `server_list` file to
+configure the RAFT cluster. Each line is an <IP, port> pair which should
+correspond to the address of a RAFT server instance. An IP value of `0` 
+signifies the local IP of the current device. A RAFT client will always
+use the local IP and port 3030.
 
 Run a RAFT server:
 - 
@@ -23,4 +27,5 @@ Usage Instructions:
 
 
 CITATIONS
-- Code for executing bash command in Server::process_command_routine sourced from https://stackoverflow.com/questions/478898/how-do-i-execute-a-command-and-get-the-output-of-the-command-within-c-using-po
+- Code for executing bash command in Server::process_command_routine sourced from: 
+https://stackoverflow.com/questions/478898/how-do-i-execute-a-command-and-get-the-output-of-the-command-within-c-using-po
