@@ -15,7 +15,7 @@ int main(int argc, char* argv[]) {
             "README for details.\n";
         return EXIT_FAILURE;
     }
-    
+
     sockaddr_in addr;
     memset(&addr, '0', sizeof(addr));
     addr.sin_family      = AF_INET;     // use IPv4
