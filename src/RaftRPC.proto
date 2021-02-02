@@ -39,7 +39,7 @@ message RPC {
     ClientRequest ClientRequest_message = 3;
 }
 
-// For server writing their persistent state variables to file.
+// For servers writing their persistent state variables to disk.
 message ServerPersistentState {
     int32 current_term = 1;
     int32 term_voted = 2;
