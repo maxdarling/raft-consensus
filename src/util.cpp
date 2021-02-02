@@ -1,5 +1,6 @@
-#include "Timer.h"
+#include "util.h"
 #include <random>    // for random_device
+#include <fstream>   // for ifstream
 
 // Construct a timer that, once started, expires after duration_ms milliseconds.
 Timer::Timer(int duration_ms) : _timer_duration(duration_ms) {}
@@ -40,4 +41,22 @@ bool Timer::has_expired() {
         return true;
     } 
     return false;
+}
+
+std::unordered_map<int, sockaddr_in> parseClusterInfo(std::string serverFilePath) {
+    std::unordered_map<int, sockaddr_in> clusterInfo;
+    
+    std::ifstream ifs(serverFilePath);
+    unsigned int ipAddr, port;
+    for (int serverNum = 1; ifs >> ipAddr >> port; ++serverNum) {
+        sockaddr_in addr;
+        memset(&addr, '0', sizeof(addr));
+        addr.sin_family      = AF_INET; // use IPv4
+        addr.sin_addr.s_addr = htons(ipAddr);
+        addr.sin_port        = htons(port);
+
+        clusterInfo.emplace(serverNum, addr);
+    }
+
+    return clusterInfo;
 }

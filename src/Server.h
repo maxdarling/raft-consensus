@@ -1,5 +1,5 @@
 #include "Messenger.h"
-#include "Timer.h"
+#include "util.h"
 #include "RaftRPC.pb.h"
 
 class Server {
