@@ -86,30 +86,25 @@ void Messenger::collectMessagesRoutine() {
 
 
 /**
+ * Server constructor. 
  * Establishes connections to all other messenger servers in the given list.
  * Waits indefinitely until all outgoing connections are established. 
  * 
  * Note: 'clientPort' should be in host-byte order. 
  */
-Messenger::Messenger(const int serverId, const unordered_map<int, struct sockaddr_in>& serverList, 
-                     bool isClient, int clientPort) {
+Messenger::Messenger(const int serverId, const unordered_map<int, struct sockaddr_in>& serverList) {
+    _isClient = false;
     _serverId = serverId;
     _serverIdToAddr = serverList;
     _clientAddrToFd = map<sockaddr_in, int, decltype(sockaddr_in_cmp)*>(&sockaddr_in_cmp);
 
     // start a networker on our assigned port
-    int port = (isClient) ? clientPort : ntohs(_serverIdToAddr[_serverId].sin_port);
+    int port = ntohs(_serverIdToAddr[_serverId].sin_port);
     _networker = new Networker(port);
 
     // start message collection background thread
     std::thread th(&Messenger::collectMessagesRoutine, this);
     th.detach();
-
-    // client doesn't opt to connect to all other messengers, and it cannot send 
-    // send shadow messages 
-    if (isClient) {
-        return;
-    }
 
     // connect to other servers
     for (const auto& [peerId, peerAddr] : serverList) {
@@ -130,6 +125,25 @@ Messenger::Messenger(const int serverId, const unordered_map<int, struct sockadd
         }
     }
     cout << "Outbound connections completed on server " << _serverId << endl;
+}
+
+
+/**
+ * Client constructor. 
+ * 
+ * Note: 'clientPort' should be in host-byte order. 
+ */
+Messenger::Messenger(const unordered_map<int, sockaddr_in>& serverList, const int clientPort) {
+    _isClient = true;
+    _serverIdToAddr = serverList;
+    _clientAddrToFd = map<sockaddr_in, int, decltype(sockaddr_in_cmp)*>(&sockaddr_in_cmp);
+
+    // start a networker on our assigned port
+    _networker = new Networker(clientPort);
+
+    // start message collection background thread
+    std::thread th(&Messenger::collectMessagesRoutine, this);
+    th.detach();
 }
 
 
@@ -176,31 +190,18 @@ bool Messenger::_sendMessage(const int serverId, std::string message, bool isSha
 
 
 /**
- * todo: deprecate
- * public version of '_sendMessage()', without shadow messages. Returns true if
- * the message was sent successfully. 
- * 
- * Note: the method is wrapped to prevent information leakage. We want
- * Messengers to additionally USE the message-sending functionality they
- * publicly implement, but for internal purposes (ie. shadow messages).
- */
-bool Messenger::sendMessage(const int serverId, std::string message) {
-    return _sendMessage(serverId, message, false, false, {});
-}
-
-/**
  * Message sending interface for the client. Returns true if the 
  * message was sent successfully. 
  * 
- * This method also handles network connections automatically, since the client
- * doesn't connect in the constructor. 
+ * This method also handles making the necessary network connections, since the
+ * client doesn't connect in the constructor.
  * 
  * Note: instead of shadow messages, this method has the client handle crashed
  * servers by simply re-attempting to connect. 
  */
 bool Messenger::sendMessageToServer(const int serverId, std::string message) {
-    // if no connection exists, or it's been closed before, attempt to create one
-    if (!_serverIdToFd.count(serverId) || _closedConnections.count(serverId)) {
+    // client case: if no connection exists, or it's been closed before, attempt to create one
+    if (_isClient && !_serverIdToFd.count(serverId) || _closedConnections.count(serverId)) {
         int connfd = _networker->establishConnection(_serverIdToAddr[serverId]);
         if (connfd == -1) {
             cout << "sendMessageToServer(): couldn't connect to server #" << serverId << endl;
@@ -217,15 +218,6 @@ bool Messenger::sendMessageToServer(const int serverId, std::string message) {
 /**
  * Message sending interface for servers to clients. Returns true if the 
  * message was sent successfully. 
- *  
- * Raft servers will parse out the client's addr, and use this method to 
- * send back to it. Outbound connections will be made inside this method. 
- * Also, we want to reuse sockets, so we'll store the fd's returned by 
- * establishConnection with the client. 
- * 
- * Note: currently we don't have a '_closedConnections' equivalent for client
- * addresses, but hopefully it's not needed? It probably isn't for raft, but 
- * is for this class. We should test that.   
  */ 
 bool Messenger::sendMessageToClient(const sockaddr_in clientAddr, std::string message) {
     if (!_clientAddrToFd.count(clientAddr)) {
@@ -237,7 +229,6 @@ bool Messenger::sendMessageToClient(const sockaddr_in clientAddr, std::string me
         _clientAddrToFd[clientAddr] = connfd;  
     }
 
-    // we need to let '_sendMessage' know to not use serverId's, but use our 'clientAddr' 
     return _sendMessage(-1, message, false, true, clientAddr);
 }
 

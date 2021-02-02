@@ -97,7 +97,7 @@ void MessengerTester(int serverNumber) {
     }
 
     // start Messenger
-    Messenger messenger(serverNumber, serverList, false, -1);
+    Messenger messenger(serverNumber, serverList);
 
     // send messages
     int n_messages_sent = 0;
@@ -112,7 +112,7 @@ void MessengerTester(int serverNumber) {
  
         
         // send the message
-        messenger.sendMessage(peerServerNumber, message);
+        messenger.sendMessageToServer(peerServerNumber, message);
 
        sleep(5);
 

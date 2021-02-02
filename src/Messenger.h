@@ -24,11 +24,15 @@ using std::unordered_set;
 
 class Messenger {
     public: 
-        Messenger(const int serverId, const unordered_map<int, struct sockaddr_in>& serverList, 
-                  bool isClient = false, int clientPort = -1);
+        /* server */
+        Messenger(const int serverId, 
+                  const unordered_map<int, sockaddr_in>& serverList);
+        /* client */
+        Messenger(const unordered_map<int, sockaddr_in>& serverList, 
+                  const int clientPort);
+         
         ~Messenger();
         
-        bool sendMessage(const int serverId, std::string message);
         bool sendMessageToServer(const int serverId, std::string message);
         bool sendMessageToClient(const sockaddr_in clientAddr, std::string message);
 
@@ -41,7 +45,7 @@ class Messenger {
                           bool isIntendedForClient, sockaddr_in clientAddr);
 
         /* distinguish server instances from client ones */
-        bool isClient;
+        bool _isClient;
 
         /* identifier for this server instance, from server list */
         int _serverId; 
