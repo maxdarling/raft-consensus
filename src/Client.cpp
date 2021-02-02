@@ -6,7 +6,7 @@
 const int REQUEST_TIMEOUT = 3000;
 
 Client::Client(const sockaddr_in &clientAddr, const unordered_map<int, sockaddr_in>& clusterInfo)
-    : _messenger(-1, clusterInfo, true, ntohs(clientAddr.sin_port)),
+    : _messenger(clusterInfo, ntohs(clientAddr.sin_port)),
       _clientAddr(ntohs(clientAddr.sin_addr.s_addr)),
       _clientPort(ntohs(clientAddr.sin_port)),
       _clusterSize(clusterInfo.size()),

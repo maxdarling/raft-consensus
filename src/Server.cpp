@@ -295,7 +295,7 @@ void Server::send_RPC(const RPC &rpc) {
 // Send RPC to a specific server in the cluster.
 void Server::send_RPC(const RPC &rpc, int server_id) {
     std::string rpc_str = rpc.SerializeAsString();
-    _messenger.sendMessage(server_id, rpc_str);
+    _messenger.sendMessageToServer(server_id, rpc_str);
 }
 
 // Return an RPC if one has been received.
