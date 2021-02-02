@@ -3,43 +3,47 @@
 #include <array>
 #include <fstream>   // for ifstream, ofstream
 
-// in milliseconds
+/* In milliseconds */
 const int ELECTION_TIMEOUT_LOWER_BOUND = 5000;
 const int ELECTION_TIMEOUT_UPPER_BOUND = 10000;
 const int HEARTBEAT_TIMEOUT = 2500;
 
-// SERVER CONSTRUCTOR
-Server::Server(const int server_id, const unordered_map<int, sockaddr_in>& cluster_info) 
+/**
+ * Construct one server instance that will receive connections at the address
+ * and port specified by the cluster_info entry corresponding to the given
+ * server ID.
+ */
+Server::Server(const int server_id, 
+    const unordered_map<int, sockaddr_in>& cluster_info) 
     : _messenger(server_id, cluster_info), 
-      _election_timer(ELECTION_TIMEOUT_LOWER_BOUND, ELECTION_TIMEOUT_UPPER_BOUND), 
+      _election_timer(ELECTION_TIMEOUT_LOWER_BOUND,
+        ELECTION_TIMEOUT_UPPER_BOUND), 
       _heartbeat_timer(HEARTBEAT_TIMEOUT),
       _server_id(server_id),
+      _recovery_fname("server" + std::to_string(_server_id) + "_state"),
       _cluster_list(cluster_info.size()) {
-    // FOR DEBUG LOGGING -- route STDERR to file
-    freopen("server_log.txt", "w", stderr);
-
-    // Populate _cluster_list with IDs of servers in cluster
+    // populate _cluster_list with IDs of servers in cluster
     transform(cluster_info.begin(), cluster_info.end(), _cluster_list.begin(), 
         [] (auto pair) { return pair.first; }
     );
 
-    std::string fname = "server" + std::to_string(_server_id) + "_state";
-    std::ifstream ifs(fname, std::ios::binary);
-    // if a server state recovery file exists, recover persistent state from this file
+    // if a server state recovery file exists, assume we have crashed and must
+    // now recover persistent state variables from this file
+    std::ifstream ifs(_recovery_fname, std::ios::binary);
     if (ifs) {
         ServerPersistentState sps;
         sps.ParseFromIstream(&ifs);
         _current_term = sps.current_term();
         if (sps.voted_for() != 0) _vote = {sps.term_voted(), sps.voted_for()};
         ifs.close();
-        std::cerr << _server_id << ": recovering state {" << sps.current_term() << ", " << sps.term_voted() << ", " << sps.voted_for() << "}\n";
     }
 }
 
-// Start the server, so that it may respond to requests from clients and other
-// servers.
+/**
+ * Start the server, so that it may respond to requests from clients and other
+ * servers.
+ */
 void Server::run() {
-    std::cerr << _server_id << ": server now running\n";
     _election_timer.start();
 
     for (;;) {
@@ -50,12 +54,13 @@ void Server::run() {
     }
 }
 
-// Updates persistent state variables on disk, then routes RPCs to their 
-// correct handler.
+/** 
+ * Updates persistent state variables on disk, then routes RPCs to their 
+ * correct handler.
+ */
 void Server::RPC_handler(const RPC &rpc) {
     // update persistent state variables on disk
-    std::string fname = "server" + std::to_string(_server_id) + "_state";
-    std::ofstream ofs(fname, std::ios::trunc | std::ios::binary);
+    std::ofstream ofs(_recovery_fname, std::ios::trunc | std::ios::binary);
     ServerPersistentState sps;
     sps.set_current_term(_current_term);
     if (_vote) {
@@ -65,9 +70,10 @@ void Server::RPC_handler(const RPC &rpc) {
     sps.SerializeToOstream(&ofs);
     ofs.close();
 
+    // route RPC to correct handler
+
     if (rpc.has_requestvote_message()) {
         const RequestVote &rv = rpc.requestvote_message();
-        // TODO(ali): duplicate term argument in RPC?
         if (rv.term() > _current_term) {
             _current_term = rv.term();
             _leader = false;
@@ -92,10 +98,12 @@ void Server::RPC_handler(const RPC &rpc) {
     }
 }
 
-// Execute the RAFT server rules for a leader:
-// - Sending heartbeats to followers
-// - Sending AppendEntries RPCs to followers
-// - Updating _commit_index
+/**
+ *  Execute the RAFT server rules for a leader:
+ * - Sending heartbeats to followers
+ * - Sending AppendEntries RPCs to followers (proj2)
+ * - Updating _commit_index (proj2)
+ */
 void Server::leader_tasks() {
     if (_heartbeat_timer.has_expired()) {
         _heartbeat_timer.start();
@@ -107,26 +115,13 @@ void Server::leader_tasks() {
         rpc.set_allocated_appendentries_message(ae);
         send_RPC(rpc);
     }
-
-    // for (int server_no = 0; server_no < _next_index.size(); server_no++) {
-        // if (_log.size() > _next_index[server_no]) {
-            // send AppendEntries RPC with log entries starting at _next_index[server_no]
-            // if successful, update nextIndex and matchIndex for follower
-            // if failure due to log inconsistency, decrement nextIndex and retry
-        // }
-    // }
-
-    // for (int server_no = 0; server_no < _match_index.size(); server_no++) {
-        // if there exists an N such that N > commitIndex, a majority of matchIndex[i] (?) >= N, and log[N].term == currentTerm, 
-        // then set commitIndex = N
-    // }
 }
 
-// Process and reply to AppendEntries RPCs from leader.
+/**
+ * Process and reply to AppendEntries RPCs from leader.
+ */
 void Server::handler_AppendEntries(const AppendEntries &ae) {
-    std::cerr << _server_id << ": received AppendEntries from " << ae.leader_id() << "\n";
-    
-    // Reject stale requests.
+    // reject stale requests
     if (ae.term() < _current_term) {
         RPC rpc;
         AppendEntries *ae_reply = new AppendEntries();
@@ -140,25 +135,25 @@ void Server::handler_AppendEntries(const AppendEntries &ae) {
     _last_observed_leader_id = ae.leader_id();
 }
 
-// Process and reply to RequestVote RPCs from leader.
+/**
+ * Process and reply to RequestVote RPCs from leader.
+ */
 void Server::handler_RequestVote(const RequestVote &rv) {
-    if (!rv.is_request()) {
-        std::cerr << _server_id << ": received RequestVote response outside of election\n";
-        return;
-    }
+    // CASE: received RV response outside of election
+    if (!rv.is_request()) return;
 
     RPC rpc;
     RequestVote *rv_reply = new RequestVote();
     rv_reply->set_term(_current_term);
     rv_reply->set_is_request(false);
     rv_reply->set_vote_granted(false);
-    if (!_vote || _vote->term_voted < _current_term || _vote->voted_for == rv.candidate_id()) {
+    if (!_vote || _vote->term_voted < _current_term 
+               || _vote->voted_for == rv.candidate_id()) {
         if (rv.term() >= _current_term) {
-            std::cerr << _server_id << ": voting for " << rv.candidate_id() << "\n";
             rv_reply->set_vote_granted(true);
             _vote = {_current_term, rv.candidate_id()};
-        } else std::cerr << _server_id << ": term more up-do-date than " << rv.candidate_id() << ", declining vote\n";
-    } else std::cerr << _server_id << ": voted for " << _vote->voted_for << " this term, declining vote for " << rv.candidate_id() << "\n";
+        }
+    }
     rpc.set_allocated_requestvote_message(rv_reply);
     send_RPC(rpc, rv.candidate_id());
 }
