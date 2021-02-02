@@ -6,6 +6,11 @@
 
 const std::string DEFAULT_SERVER_FILE_PATH = "../server_list";
 
+/**
+ * This class implements a timer which can be deterministic, going off after a
+ * set duration, or stochastic, going off after a random duration in a specified
+ * interval.
+ */
 class Timer {
   public:
     Timer(int duration_ms);
@@ -19,7 +24,7 @@ class Timer {
     std::chrono::milliseconds _timer_duration;
     bool _marked_as_expired {false};
     
-    // FOR USE IN RANDOM TIMER
+    // FOR USE IN STOCHASTIC TIMER
     std::optional<int> _lower_bound;
     std::optional<int> _upper_bound;    
 };

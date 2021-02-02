@@ -43,6 +43,7 @@ bool Timer::has_expired() {
     return false;
 }
 
+// Parse a cluster info map from a server address list file.
 std::unordered_map<int, sockaddr_in> parseClusterInfo(std::string serverFilePath) {
     std::unordered_map<int, sockaddr_in> clusterInfo;
     
