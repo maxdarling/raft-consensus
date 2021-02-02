@@ -23,7 +23,7 @@ Raft projects for Max Darling and Ali Saeed
 Happy RAFTing!
 
 **Advanced features:**
-- If you want to specify a custom server address list located `at/some/path`, you can pass that path as the second argument to both `raft_server` and `raft_client`.
+- If you want to specify a custom server address list located `at/some/path`, you can pass that path as the third argument to `raft_server` and second argument to `raft_client`.
 
 **Citations:**
 - Code for executing bash command in Server::process_command_routine sourced from: 
