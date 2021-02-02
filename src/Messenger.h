@@ -1,5 +1,4 @@
 #include "Networker.h"
-
 #include <unordered_set>
 
 using std::unordered_set;
@@ -21,7 +20,6 @@ using std::unordered_set;
  * -To re-join the grid after a crash, simply initialize the Messenger 
  * identically to before. There are no extra steps needed.  
  */
-
 class Messenger {
     public: 
         /* server */
@@ -34,15 +32,17 @@ class Messenger {
         ~Messenger();
         
         bool sendMessageToServer(const int serverId, std::string message);
-        bool sendMessageToClient(const sockaddr_in clientAddr, std::string message);
+        bool sendMessageToClient(const sockaddr_in clientAddr, 
+                                 std::string message);
 
         std::optional<std::string> getNextMessage();
 
     private:
         // should these be defined in here, too, or only in the source file?
         void collectMessagesRoutine();
-        bool _sendMessage(const int serverId, std::string message, bool isShadow, 
-                          bool isIntendedForClient, sockaddr_in clientAddr);
+        bool _sendMessage(const int serverId, std::string message, 
+                          bool isShadow, bool isIntendedForClient, 
+                          sockaddr_in clientAddr);
 
         /* distinguish server instances from client ones */
         bool _isClient;
@@ -60,7 +60,8 @@ class Messenger {
         unordered_map<int, int> _serverIdToFd; 
         unordered_map<int, struct sockaddr_in> _serverIdToAddr;
         unordered_set<int> _closedConnections;
-        map<sockaddr_in, int, bool(*)(const sockaddr_in a, const sockaddr_in b)> _clientAddrToFd;
+        map<sockaddr_in, int, 
+            bool(*)(const sockaddr_in a, const sockaddr_in b)> _clientAddrToFd;
 
         /* store collected messages */
         queue<std::string> _messageQueue;

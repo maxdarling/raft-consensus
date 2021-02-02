@@ -15,15 +15,12 @@
 #include <cassert>
 #include <iostream>
 
-using std::cout;
-using std::endl;
-
 /* argument for 'listen()' */
 const short MAX_BACKLOG_CONNECTIONS = 10;
 
 
 /**
- * Background thread routine to accept incoming connection requeuests. 
+ * Background thread routine to accept incoming connection requeuests.
  */
 void Networker::listenerRoutine() {
     while(true) {
@@ -65,7 +62,8 @@ Networker::Networker(const short port) {
     } 
     // to prevent 'bind() failed: address already in use' errors on restarting
     int enable = 1;
-    if (setsockopt(_listenfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
+    if (setsockopt(_listenfd, SOL_SOCKET, SO_REUSEADDR, 
+                   &enable, sizeof(int)) < 0) {
         perror("\n Error : setsockopt() failed \n");
         exit(EXIT_FAILURE);
     }
@@ -93,18 +91,15 @@ Networker::~Networker() {
 
 
 /**
- * Establishes an outbound connection with a server at the specified address,
- * and returns the associated file descriptor. If the
- * connection fails, returns -1.
+ * Creates an outbound connection with a server at the specified address,
+ * and returns the associated file descriptor or -1 on an error. 
  */
 int Networker::establishConnection(const sockaddr_in& serv_addr) {
     int connfd;
     if((connfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        cout << "establishConnection(): 'socket()' failed" << endl;
         return -1;
     } 
     if(connect(connfd, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        cout << "establishConnection(): 'connect()' failed" << endl;
         return -1;
     } 
 
@@ -168,13 +163,12 @@ int Networker::sendAll(const int connfd, const void* buf, const int length) {
          */
         int checkEOF = recv(connfd, nullptr, 1, MSG_DONTWAIT);
         if (checkEOF == 0) {
-            cout << "EOF detected in sendAll()" << endl;
             return -1;
         }
         // flag: disable error signal handling for this call. 
-        int n = send(connfd, (char *)buf + bytesWritten, length - bytesWritten, MSG_NOSIGNAL);
+        int n = send(connfd, (char *)buf + bytesWritten, 
+                     length - bytesWritten, MSG_NOSIGNAL);
         if (n < 0) {
-            cout << "sendAll() failed (but connection wasn't closed)" << endl;
             return -1; 
         }
         bytesWritten += n;
@@ -184,8 +178,8 @@ int Networker::sendAll(const int connfd, const void* buf, const int length) {
 
 
 /** 
- * Read 'bytesToRead' bytes from a peer's socket. Returns the number of bytes read, or
- * -1 if there was an error.
+ * Read 'bytesToRead' bytes from a peer's socket. Returns the number of bytes
+ * read, or -1 if there was an error.
  * 
  * If the peer closed the connection or an error ocurred while reading, 
  * the socket will be closed.
@@ -193,13 +187,10 @@ int Networker::sendAll(const int connfd, const void* buf, const int length) {
 int Networker::readAll(const int connfd, void* buf, int bytesToRead) {
     int bytesRead = 0;
     while (bytesRead < bytesToRead) {
-        int n = recv(connfd, (char *)buf + bytesRead, bytesToRead - bytesRead, MSG_NOSIGNAL);
+        int n = recv(connfd, (char *)buf + bytesRead, 
+                     bytesToRead - bytesRead, MSG_NOSIGNAL);
         // orderly shutdown, or an error ocurred
         if (n == 0 || n < 0) {
-            std::string errMsg = (n == 0 ? 
-                "readAll(): peer closed the connection" :
-                "readAll() failed");
-            cout << errMsg << endl;
             // disassociate with this fd 
             std::lock_guard<std::mutex> lock(_m);
             close(connfd);
@@ -216,5 +207,3 @@ int Networker::readAll(const int connfd, void* buf, int bytesToRead) {
     }
     return bytesRead;
 }
-
-
