@@ -2,18 +2,23 @@
 #include "RaftRPC.pb.h"
 #include <iostream>
 
-// in milliseconds
-const int REQUEST_TIMEOUT = 3000;
-
-Client::Client(const sockaddr_in &clientAddr, const unordered_map<int, sockaddr_in>& clusterInfo)
+/**
+ * Construct a client instance at the given address to be serviced by the
+ * given cluster.
+ */
+Client::Client(const sockaddr_in &clientAddr, 
+    const unordered_map<int, sockaddr_in>& clusterInfo)
     : _messenger(clusterInfo, ntohs(clientAddr.sin_port)),
       _clientAddr(ntohs(clientAddr.sin_addr.s_addr)),
       _clientPort(ntohs(clientAddr.sin_port)),
-      _clusterSize(clusterInfo.size()),
-      _requestTimer(REQUEST_TIMEOUT) {}
+      _clusterSize(clusterInfo.size()) {}
 
+/**
+ * Launches a RAFT shell, which loops indefinitely, accepting commands to be
+ * run on the RAFT cluster.
+ */
 void Client::run() {
-    std::cout << "---WELCOME TO RASH (THE RAFT SHELL)---\n";
+    std::cout << "--- WELCOME TO RASH (THE RAFT SHELL) ---\n";
     for (;;) {
         std::string cmd;
         std::cout << "> ";
@@ -22,6 +27,10 @@ void Client::run() {
     }
 }
 
+/**
+ * Send a BASH cmd string to be run on the RAFT cluster, await a response, 
+ * and return the output of the command.
+ */
 std::string Client::executeCommand(std::string cmd) {
     std::string serializedRequest;
     {
@@ -36,38 +45,21 @@ std::string Client::executeCommand(std::string cmd) {
 
     RPC serverResponse;
     do {
-        _requestTimer.start();
+        // Cycle through servers until we find one that's not down
         while (!_messenger.sendMessageToServer(_leaderID, serializedRequest)) {
-            std::cout << "server " << _leaderID << " down; trying ";
             _leaderID = (_leaderID + 1) % _clusterSize;
             if (_leaderID == 0) ++_leaderID;
-            std::cout << _leaderID << " next\n";
         }
 
         std::optional<std::string> msgOpt;
-        // TODO(ali): timeout and try a different server if this one crashes
-        // maybe pull the Timer class into its own file and use it?
-        while (!msgOpt) {
-            // if (_requestTimer.has_expired()) break; 
-            msgOpt = _messenger.getNextMessage();
-        }
-        // if (!msgOpt) {
-        //     std::cout << "server " << _leaderID << " not responding; trying ";
-        //     _leaderID = (_leaderID + 1) % _clusterSize;
-        //     if (_leaderID == 0) ++_leaderID;
-        //     std::cout << _leaderID << " next\n";
-        //     continue;
-        // }
+        while (!msgOpt) msgOpt = _messenger.getNextMessage();
 
         serverResponse.ParseFromString(*msgOpt);
 
-        if (!serverResponse.has_clientrequest_message()) {
-            std::cout << "received ill-formed msg from server\n";
-            return {};
-        }
+        // CASE: ill-formed response from server (should never happen)
+        if (!serverResponse.has_clientrequest_message()) return {};
 
         _leaderID = serverResponse.clientrequest_message().leader_id();
-        // std::cout << "we should go to " << _leaderID << "\n";
     } while (!serverResponse.clientrequest_message().success());
 
     return serverResponse.clientrequest_message().output();
