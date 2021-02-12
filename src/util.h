@@ -4,7 +4,9 @@
 #include <unordered_map>
 #include <netinet/in.h>  // for sockaddr_in
 
-const std::string DEFAULT_SERVER_FILE_PATH = "../server_list";
+const std::string SRC_DIR = std::string(__FILE__).substr(0, std::string(__FILE__).find_last_of("/") + 1);
+const std::string DEFAULT_SERVER_FILE_PATH =  SRC_DIR + "../server_list";
+
 
 /**
  * This class implements a timer which can be deterministic, going off after a
