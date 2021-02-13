@@ -7,7 +7,9 @@ int main(int argc, char* argv[]) {
     std::string serverFilePath = argc == 2? argv[1] : DEFAULT_SERVER_FILE_PATH;
 
     unordered_map<int, sockaddr_in> clusterInfo = 
-        parseClusterInfo(serverFilePath);
+        parseClusterInfoBad(serverFilePath);
+    // unordered_map<int, std::string> clusterInfo = 
+    //     parseClusterInfo(serverFilePath);
     if (clusterInfo.empty()) {
         std::cerr << "Invalid server address list! Either the file is "
             "improperly formatted, or the custom path to the file is wrong, or "

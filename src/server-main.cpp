@@ -13,7 +13,9 @@ int main(int argc, char* argv[]) {
 
     std::string serverFilePath = argc == 3? argv[2] : DEFAULT_SERVER_FILE_PATH;
 
-    unordered_map<int, sockaddr_in> clusterInfo = 
+    // unordered_map<int, sockaddr_in> clusterInfo = 
+    //     parseClusterInfo(serverFilePath);
+    unordered_map<int, std::string> clusterInfo = 
         parseClusterInfo(serverFilePath);
     if (clusterInfo.empty()) {
         std::cerr << "Invalid server address list! Either the file is "
@@ -31,7 +33,8 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "SERVER #" << serverNumber << " NOW RUNNING\n";
-    Server s(serverNumber, clusterInfo);
+    std::string myHostAndPort = clusterInfo[serverNumber];
+    Server s(serverNumber, myHostAndPort, clusterInfo);
     s.run();
 
     return 0;

@@ -3,7 +3,12 @@
 /* for 'close()', 'sleep()' */
 #include <unistd.h>
 
+/* for 'inet_addr()' */
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
 #include <iostream>
+using std::cout, std::endl;
 
 const static int SHADOW_MESSAGE_ID = -190;
 
@@ -46,28 +51,29 @@ void Messenger::collectMessagesRoutine() {
         msgLength = ntohl(msgLength); // convert to host order before use
 
         // handle shadow message
-        if (msgLength == SHADOW_MESSAGE_ID) {
-            // protocol: read the peer's 4-byte ID 
-            int peerServerId;
-            n = _networker->readAll(connfd, &peerServerId, 
-                                    sizeof(peerServerId));
-            if (n != sizeof(peerServerId)) {
-                continue;
-            }
-            peerServerId = ntohl(peerServerId);
+        // todo: delete
+        // if (msgLength == SHADOW_MESSAGE_ID) {
+        //     // protocol: read the peer's 4-byte ID 
+        //     int peerServerId;
+        //     n = _networker->readAll(connfd, &peerServerId, 
+        //                             sizeof(peerServerId));
+        //     if (n != sizeof(peerServerId)) {
+        //         continue;
+        //     }
+        //     peerServerId = ntohl(peerServerId);
 
-            // update the outbound connection to the peer 
-            if (_serverIdToFd.count(peerServerId) && 
-                !_closedConnections.count(peerServerId)) {
-                close(_serverIdToFd[peerServerId]);
-            }
-            _serverIdToFd[peerServerId] =
-                _networker->establishConnection(_serverIdToAddr[peerServerId]);
-            _closedConnections.erase(peerServerId);
-        }
+        //     // update the outbound connection to the peer 
+        //     if (_serverIdToFd.count(peerServerId) && 
+        //         !_closedConnections.count(peerServerId)) {
+        //         close(_serverIdToFd[peerServerId]);
+        //     }
+        //     _serverIdToFd[peerServerId] =
+        //         _networker->establishConnection(_serverIdToAddr[peerServerId]);
+        //     _closedConnections.erase(peerServerId);
+        // }
 
         // handle default message 
-        else {
+        //else {
             char msgBuf [msgLength];
             n = _networker->readAll(connfd, msgBuf, sizeof(msgBuf));
             if (n != msgLength) {
@@ -75,7 +81,7 @@ void Messenger::collectMessagesRoutine() {
             }
             std::lock_guard<std::mutex> lock(_m);
             _messageQueue.push(std::string(msgBuf, sizeof(msgBuf)));
-        }
+        //}
     }
 }
 
@@ -85,38 +91,39 @@ void Messenger::collectMessagesRoutine() {
  * Establishes connections to all other messenger servers in the given list.
  * Waits indefinitely until all outgoing connections are established. 
  */
-Messenger::Messenger(const int serverId, 
-                     const unordered_map<int, sockaddr_in>& serverList) {
+Messenger::Messenger(const int myServerId, std::string myHostAndPort) {
     _isClient = false;
-    _serverId = serverId;
-    _serverIdToAddr = serverList;
+    _serverId = myServerId;
     _clientAddrToFd = 
         map<sockaddr_in, int, decltype(sockaddr_in_cmp)*>(&sockaddr_in_cmp);
 
     // start a networker on our assigned port
-    int port = ntohs(_serverIdToAddr[_serverId].sin_port);
-    _networker = new Networker(port);
+    //int port = ntohs(_serverIdToAddr[_serverId].sin_port);
+    int myPort = std::stoi(myHostAndPort.substr(myHostAndPort.find(":") + 1));
+    _networker = new Networker(myPort);
 
     // start message collection background thread
     std::thread th(&Messenger::collectMessagesRoutine, this);
     th.detach();
 
     // connect to other servers
-    for (const auto& [peerId, peerAddr] : serverList) {
-        if (peerId != _serverId) {
-            int connfd;
-            while(-1 == (connfd = _networker->establishConnection(peerAddr))) {
-                sleep(3);
-            }
-            _serverIdToFd[peerId] = connfd;
+    // for (const auto& [peerId, peerAddr] : serverList) {
+    //     if (peerId != _serverId) {
+    //         int connfd;
+    //         while(-1 == (connfd = _networker->establishConnection(peerAddr))) {
+    //             sleep(3);
+    //         }
+    //         _serverIdToFd[peerId] = connfd;
 
-            // send a shadow message to this peer
-            int msg = htonl(_serverId); 
-            char buf [4];
-            memcpy(buf, &msg, sizeof(msg));
-            _sendMessage(peerId, std::string(buf, sizeof(buf)), true);
-        }
-    }
+    //         // send a shadow message to this peer
+    //         int msg = htonl(_serverId); 
+    //         char buf [4];
+    //         memcpy(buf, &msg, sizeof(msg));
+    //         _sendMessage(peerId, std::string(buf, sizeof(buf)), true);
+    //     }
+    // }
+    sleep(5);
+    cout << "finished messenger constructor (server)" << endl;
 }
 
 
@@ -125,7 +132,7 @@ Messenger::Messenger(const int serverId,
  * 
  * Note: 'clientPort' should be in host-byte order. 
  */
-Messenger::Messenger(const unordered_map<int, sockaddr_in>& serverList, 
+Messenger::Messenger(const unordered_map<int, sockaddr_in>& serverList,  // todo: delete
                      const int clientPort) {
     _isClient = true;
     _serverIdToAddr = serverList;
@@ -138,6 +145,9 @@ Messenger::Messenger(const unordered_map<int, sockaddr_in>& serverList,
     // start message collection background thread
     std::thread th(&Messenger::collectMessagesRoutine, this);
     th.detach();
+
+    sleep(5);
+    cout << "finished messenger constructor (client)" << endl;
 }
 
 
@@ -157,7 +167,7 @@ Messenger::~Messenger() {
 bool Messenger::_sendMessage(const int serverId, std::string message, 
                              bool isShadowMsg,
                              bool isIntendedForClient, 
-                             sockaddr_in clientAddr) {
+                             sockaddr_in clientAddr, int connfd) {
     // for now: only manage closed connections for servers, not clients
     if (!isIntendedForClient && _closedConnections.count(serverId)) {
         return false;
@@ -166,9 +176,10 @@ bool Messenger::_sendMessage(const int serverId, std::string message,
     int msgLength = (isShadowMsg) ? SHADOW_MESSAGE_ID : message.length();
     msgLength = htonl(msgLength); // convert to network order before sending
 
-    int connfd = (isIntendedForClient) ? 
-        _clientAddrToFd[clientAddr] : 
-        _serverIdToFd[serverId];
+    // int connfd = (isIntendedForClient) ? 
+    //     _clientAddrToFd[clientAddr] : 
+    //     _serverIdToFd[serverId];
+    
 
     // send message length and body
     if ((_networker->sendAll(connfd, &msgLength, sizeof(msgLength)) != 
@@ -228,6 +239,20 @@ bool Messenger::sendMessageToClient(const sockaddr_in clientAddr,
 }
 
 
+// unified function
+bool Messenger::sendMessage(std::string hostAndPort, std::string message) { 
+   if (!_hostAndPortToFd.count(hostAndPort)) {
+       int connfd = Messenger::establishConnection(hostAndPort);
+       if (connfd == -1) {
+           cout << "connection failed to " << hostAndPort << endl;
+           return false;
+       }
+       cout << "connection established with " << hostAndPort << endl;
+       _hostAndPortToFd[hostAndPort] = connfd;
+   }
+    return _sendMessage(-1, message, false, false, {}, _hostAndPortToFd[hostAndPort]);
+}
+
 /** 
  * Return a message if one is available.
  */
@@ -248,4 +273,38 @@ bool sockaddr_in_cmp(const sockaddr_in a, const sockaddr_in b) {
         return a.sin_port < b.sin_port;
     }
     return a.sin_addr.s_addr < b.sin_addr.s_addr;
+}
+
+
+// temporary establish connection method, in terms of "IP:port"
+// IP should be in standard IPv4 dotted decimal notation, ex. "127.0.0.95"
+// example: "127.0.0.95:8000"
+int Messenger::establishConnection(std::string hostAndPort) {
+    // parse input string 
+    int colonIdx = hostAndPort.find(":");
+    std::string IPstr = hostAndPort.substr(0, colonIdx);
+    int port = std::stoi(hostAndPort.substr(colonIdx + 1));
+
+    sockaddr_in serv_addr;
+    memset(&serv_addr, '0', sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET; // use IPv4
+    serv_addr.sin_port = htons(port);
+    serv_addr.sin_addr.s_addr = inet_addr(IPstr.c_str()); // translate str IP
+    if (serv_addr.sin_addr.s_addr == INADDR_NONE) {
+        perror("bad address.");
+        return -1;
+    }
+
+    // make the connection
+    int connfd;
+    if((connfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("\n Error : socket() failed \n");
+        return -1;
+    } 
+    if(connect(connfd, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        perror("\n Error : connect() failed \n");
+        return -1;
+    } 
+
+    return connfd; 
 }

@@ -31,4 +31,5 @@ class Timer {
     std::optional<int> _upper_bound;    
 };
 
-std::unordered_map<int, sockaddr_in> parseClusterInfo(std::string serverFilePath);
+std::unordered_map<int, sockaddr_in> parseClusterInfoBad(std::string serverFilePath);
+std::unordered_map<int, std::string> parseClusterInfo(std::string serverFilePath);

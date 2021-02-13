@@ -44,7 +44,7 @@ bool Timer::has_expired() {
 }
 
 // Parse a cluster info map from a server address list file.
-std::unordered_map<int, sockaddr_in> parseClusterInfo(std::string serverFilePath) {
+std::unordered_map<int, sockaddr_in> parseClusterInfoBad(std::string serverFilePath) {
     std::unordered_map<int, sockaddr_in> clusterInfo;
     
     std::ifstream ifs(serverFilePath);
@@ -57,6 +57,19 @@ std::unordered_map<int, sockaddr_in> parseClusterInfo(std::string serverFilePath
         addr.sin_port        = htons(port);
 
         clusterInfo.emplace(serverNum, addr);
+    }
+
+    return clusterInfo;
+}
+
+// revised for p2
+std::unordered_map<int, std::string> parseClusterInfo(std::string serverFilePath) {
+    std::unordered_map<int, std::string> clusterInfo;
+    
+    std::ifstream ifs(serverFilePath);
+    std::string hostAndPort;
+    for (int serverNum = 1; ifs >> hostAndPort; ++serverNum) {
+        clusterInfo.emplace(serverNum, hostAndPort);
     }
 
     return clusterInfo;

@@ -108,7 +108,8 @@ void MessengerTester(int serverNumber) {
     }
 
     // start Messenger
-    Messenger messenger(serverNumber, serverList);
+    int myPort = PORT_BASE + serverNumber;
+    Messenger messenger(serverNumber, "0:" + std::to_string(myPort));
 
     // send messages
     int n_messages_sent = 0;
@@ -116,6 +117,8 @@ void MessengerTester(int serverNumber) {
         // pick a random server to send a message to
         int peerServerNumber; 
         while ((peerServerNumber = 1 + (rand() % serverList.size())) == serverNumber);
+
+        std::string peerHostAndPort = "0:" + std::to_string(PORT_BASE + peerServerNumber);
         
         // construct a message
         std::string message = "\n\n~~~~~~Message #" + std::to_string(++n_messages_sent) + 
@@ -123,7 +126,8 @@ void MessengerTester(int serverNumber) {
  
         
         // send the message
-        messenger.sendMessageToServer(peerServerNumber, message);
+        //messenger.sendMessageToServer(peerServerNumber, message);
+        messenger.sendMessage(peerHostAndPort, message);
 
        sleep(5);
 

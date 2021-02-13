@@ -12,9 +12,11 @@ const int HEARTBEAT_TIMEOUT = 2500;
  * and port specified by the cluster_info entry corresponding to the given
  * server ID.
  */
-Server::Server(const int server_id, 
-    const unordered_map<int, sockaddr_in>& cluster_info) 
-    : _messenger(server_id, cluster_info), 
+Server::Server(const int server_id, std::string myHostAndPort,
+    const unordered_map<int, std::string>& cluster_info) 
+    : _messenger(server_id, myHostAndPort), 
+      _myHostAndPort(myHostAndPort),
+      _serverIdToHostAndPort(cluster_info),
       _election_timer(ELECTION_TIMEOUT_LOWER_BOUND,
                       ELECTION_TIMEOUT_UPPER_BOUND), 
       _heartbeat_timer(HEARTBEAT_TIMEOUT),
@@ -283,9 +285,11 @@ void Server::send_RPC(const RPC &rpc) {
 /**
  * Send RPC to a specific server in the cluster.
  */ 
-void Server::send_RPC(const RPC &rpc, int server_id) {
+void Server::send_RPC(RPC rpc, int server_id) {
+    rpc.set_senderhostandport(_myHostAndPort);
     std::string rpc_str = rpc.SerializeAsString();
-    _messenger.sendMessageToServer(server_id, rpc_str);
+    //_messenger.sendMessageToServer(server_id, rpc_str);
+    _messenger.sendMessage(_serverIdToHostAndPort[server_id], rpc_str);
 }
 
 /**
