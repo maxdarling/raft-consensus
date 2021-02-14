@@ -109,7 +109,7 @@ void MessengerTester(int serverNumber) {
 
     // start Messenger
     int myPort = PORT_BASE + serverNumber;
-    Messenger messenger(serverNumber, "0:" + std::to_string(myPort));
+    Messenger messenger(myPort);
 
     // send messages
     int n_messages_sent = 0;

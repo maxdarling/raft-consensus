@@ -8,14 +8,13 @@
  */
 class Client {
   public:
-    Client(const sockaddr_in &clientAddr, const unordered_map<int, sockaddr_in>& clusterInfo);
+    Client(std::string myHostAndPort, const unordered_map<int, std::string>& cluster_map);
     void run();
     
   private:
     Messenger _messenger;
-    unsigned int _clientAddr;
-    int _clientPort;
-    int _clusterSize;
+    std::string _myHostAndPort;
+    unordered_map<int, std::string> _cluster_map; // maps each cluster node's ID to it's network address
     int _leaderID {1};  // Best guess as to whom the cluster leader is currently
 
     std::string executeCommand(std::string command);

@@ -8,24 +8,11 @@
  */
 class Server {
   public:
-    Server(const int server_id, std::string myHostAndPort,
-        const unordered_map<int, std::string>& cluster_list);
+    Server(const int server_id, 
+        const unordered_map<int, std::string>& cluster_map);
     void run();
 
   private:
-    /* 
-        remove once we change socket architecture. however, for now, all RPC
-        senders will need to include their host and port string. we use this
-        as a unique identifier for servers and clients. all RPCs contain the
-        sender's host and port, and so the responder simply uses this info.
-        this eliminates the need for servers to use the cluster list, and for
-        clients to include their sockaddr_in.
-        
-        This is still bad information leakage about the networking code, but
-        I wanted to remove the cluster list and sockaddr_in stuff more.
-    */
-    std::string _myHostAndPort;
-    
     /* To track our most recent leader election vote. */
     struct Vote {
       int term_voted;
@@ -49,8 +36,7 @@ class Server {
     bool _leader {false};
     int _last_observed_leader_id {1};
     std::string _recovery_fname;      // name of instance's state recovery file
-    std::vector<int> _cluster_list;   // stores IDs of servers in cluster
-    unordered_map<int, std::string> _serverIdToHostAndPort;
+    unordered_map<int, std::string> _cluster_map; // map each node ID to its net address
 
     /* UTIL */
     Messenger _messenger;
@@ -61,12 +47,12 @@ class Server {
     void handler_AppendEntries(const AppendEntries &ae);
     void handler_RequestVote(const RequestVote &rv);
     void handler_ClientCommand(const ClientRequest &cr);
-    void process_command_routine(std::string command, sockaddr_in client_addr);
+    void process_command_routine(std::string command, std::string clientHostAndPort);
     void leader_tasks();
     bool try_election();
     void apply_log_entries();
 
-    void send_RPC(const RPC &rpc);
+    void broadcast_RPC(const RPC &rpc);
     void send_RPC(RPC rpc, int _server_id);
     std::optional<RPC> receive_RPC();
 };

@@ -13,8 +13,6 @@ int main(int argc, char* argv[]) {
 
     std::string serverFilePath = argc == 3? argv[2] : DEFAULT_SERVER_FILE_PATH;
 
-    // unordered_map<int, sockaddr_in> clusterInfo = 
-    //     parseClusterInfo(serverFilePath);
     unordered_map<int, std::string> clusterInfo = 
         parseClusterInfo(serverFilePath);
     if (clusterInfo.empty()) {
@@ -33,8 +31,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "SERVER #" << serverNumber << " NOW RUNNING\n";
-    std::string myHostAndPort = clusterInfo[serverNumber];
-    Server s(serverNumber, myHostAndPort, clusterInfo);
+    Server s(serverNumber, clusterInfo);
     s.run();
 
     return 0;

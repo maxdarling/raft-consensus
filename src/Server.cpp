@@ -1,32 +1,35 @@
 #include "Server.h"
 #include <array>
 #include <fstream>   // for ifstream, ofstream
+#include <iostream> 
+
+using std::cout, std::endl;
 
 /* In milliseconds */
 const int ELECTION_TIMEOUT_LOWER_BOUND = 5000;
 const int ELECTION_TIMEOUT_UPPER_BOUND = 10000;
 const int HEARTBEAT_TIMEOUT = 2500;
 
+// only used in constructor. behavior: "127.0.0.95:8000" -> 8000
+int parsePort(std::string hostAndPort) {
+    return std::stoi(hostAndPort.substr(hostAndPort.find(":") + 1));
+}
+
+
 /**
  * Construct one server instance that will receive connections at the address
  * and port specified by the cluster_info entry corresponding to the given
  * server ID.
  */
-Server::Server(const int server_id, std::string myHostAndPort,
-    const unordered_map<int, std::string>& cluster_info) 
-    : _messenger(server_id, myHostAndPort), 
-      _myHostAndPort(myHostAndPort),
-      _serverIdToHostAndPort(cluster_info),
+Server::Server(const int server_id, 
+    const unordered_map<int, std::string>& cluster_map) 
+    : _server_id(server_id),
+      _cluster_map(cluster_map), 
+      _messenger(parsePort(_cluster_map[server_id])),
       _election_timer(ELECTION_TIMEOUT_LOWER_BOUND,
                       ELECTION_TIMEOUT_UPPER_BOUND), 
       _heartbeat_timer(HEARTBEAT_TIMEOUT),
-      _server_id(server_id),
-      _recovery_fname("server" + std::to_string(_server_id) + "_state"),
-      _cluster_list(cluster_info.size()) {
-    // Populate _cluster_list with IDs of servers in cluster
-    transform(cluster_info.begin(), cluster_info.end(), _cluster_list.begin(), 
-        [] (auto pair) { return pair.first; }
-    );
+      _recovery_fname("server" + std::to_string(_server_id) + "_state") {
 
     // If a server state recovery file exists, assume we have crashed and must
     // now recover persistent state variables from this file
@@ -112,7 +115,7 @@ void Server::leader_tasks() {
         ae->set_term(_current_term);
         ae->set_leader_id(_server_id);
         rpc.set_allocated_appendentries_message(ae);
-        send_RPC(rpc);
+        broadcast_RPC(rpc);
     }
 }
 
@@ -162,12 +165,6 @@ void Server::handler_RequestVote(const RequestVote &rv) {
  * response with the result of executing the command.
  */  
 void Server::handler_ClientCommand(const ClientRequest &cr) {
-    sockaddr_in client_addr;
-    memset(&client_addr, '0', sizeof(client_addr));
-    client_addr.sin_family = AF_INET; // use IPv4
-    client_addr.sin_addr.s_addr = htons(cr.client_addr()); // use local IP
-    client_addr.sin_port = htons(cr.client_port());
-
     // CASE: we're not the leader, so send response to client with ID of the
     // last leader we observed
     if (!_leader) {
@@ -176,20 +173,20 @@ void Server::handler_ClientCommand(const ClientRequest &cr) {
         cr_reply->set_success(false);
         cr_reply->set_leader_id(_last_observed_leader_id);
         rpc.set_allocated_clientrequest_message(cr_reply);
-        _messenger.sendMessageToClient(client_addr, rpc.SerializeAsString());
+        _messenger.sendMessage(cr.client_hostandport(), rpc.SerializeAsString());
         return;
     }
 
     // Execute command on its own thread so we don't block
     std::thread th(&Server::process_command_routine, 
-        this, cr.command(), client_addr);
+        this, cr.command(), cr.client_hostandport());
     th.detach();
 }
 
 /**
  * Execute cmd string via bash and send response to client with the output.
  */
-void Server::process_command_routine(std::string cmd, sockaddr_in client_addr) {
+void Server::process_command_routine(std::string cmd, std::string clientHostAndPort) {
     // See README for a citation for this code snippet
     std::string result;
     std::array<char, 128> buf;
@@ -210,7 +207,7 @@ void Server::process_command_routine(std::string cmd, sockaddr_in client_addr) {
     cr_reply->set_leader_id(_last_observed_leader_id);
     cr_reply->set_output(result);
     rpc.set_allocated_clientrequest_message(cr_reply);
-    _messenger.sendMessageToClient(client_addr, rpc.SerializeAsString());
+    _messenger.sendMessage(clientHostAndPort, rpc.SerializeAsString());
 }
 
 /**
@@ -231,7 +228,7 @@ bool Server::try_election() {
     rv->set_term(_current_term);
     rv->set_candidate_id(_server_id);
     rpc.set_allocated_requestvote_message(rv);
-    send_RPC(rpc);
+    broadcast_RPC(rpc);
 
     for (;;) {
         if (_election_timer.has_expired()) return false;
@@ -258,7 +255,7 @@ bool Server::try_election() {
         }
         
         // CASE: election won
-        if (votes > _cluster_list.size() / 2) {
+        if (votes > _cluster_map.size() / 2) {
             _leader = true;
             _last_observed_leader_id = _server_id;
             _heartbeat_timer.mark_as_expired();
@@ -275,8 +272,8 @@ void Server::apply_log_entries() {}
 /**
  * Send RPC to all other servers in the cluster.
  */
-void Server::send_RPC(const RPC &rpc) {
-    for (int server_id : _cluster_list) {
+void Server::broadcast_RPC(const RPC &rpc) {
+    for (const auto &[server_id, hostAndPort]: _cluster_map) {
         if (server_id == _server_id) continue;
         send_RPC(rpc, server_id);
     }
@@ -286,10 +283,8 @@ void Server::send_RPC(const RPC &rpc) {
  * Send RPC to a specific server in the cluster.
  */ 
 void Server::send_RPC(RPC rpc, int server_id) {
-    rpc.set_senderhostandport(_myHostAndPort);
     std::string rpc_str = rpc.SerializeAsString();
-    //_messenger.sendMessageToServer(server_id, rpc_str);
-    _messenger.sendMessage(_serverIdToHostAndPort[server_id], rpc_str);
+    _messenger.sendMessage(_cluster_map[server_id], rpc_str);
 }
 
 /**

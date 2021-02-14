@@ -2,16 +2,21 @@
 #include "RaftRPC.pb.h"
 #include <iostream>
 
+// only used in constructor. behavior: "127.0.0.95:8000" -> 8000
+int parsePort(std::string hostAndPort) {
+    return std::stoi(hostAndPort.substr(hostAndPort.find(":") + 1));
+}
+
+
 /**
  * Construct a client instance at the given address to be serviced by the
  * given cluster.
  */
-Client::Client(const sockaddr_in &clientAddr, 
-    const unordered_map<int, sockaddr_in>& clusterInfo)
-    : _messenger(clusterInfo, ntohs(clientAddr.sin_port)),
-      _clientAddr(ntohs(clientAddr.sin_addr.s_addr)),
-      _clientPort(ntohs(clientAddr.sin_port)),
-      _clusterSize(clusterInfo.size()) {}
+Client::Client(std::string myHostAndPort, 
+    const unordered_map<int, std::string>& cluster_map)
+    : _messenger(parsePort(myHostAndPort)),
+      _myHostAndPort(myHostAndPort),
+      _cluster_map(cluster_map) {}
 
 /**
  * Launches a RAFT shell, which loops indefinitely, accepting commands to be
@@ -37,8 +42,7 @@ std::string Client::executeCommand(std::string cmd) {
         RPC rpc;
         ClientRequest *cr = new ClientRequest();
         cr->set_command(cmd);
-        cr->set_client_addr(_clientAddr);
-        cr->set_client_port(_clientPort);
+        cr->set_client_hostandport(_myHostAndPort);
         rpc.set_allocated_clientrequest_message(cr);
         serializedRequest = rpc.SerializeAsString();
     }
@@ -46,8 +50,8 @@ std::string Client::executeCommand(std::string cmd) {
     RPC serverResponse;
     do {
         // Cycle through servers until we find one that's not down
-        while (!_messenger.sendMessageToServer(_leaderID, serializedRequest)) {
-            _leaderID = (_leaderID + 1) % _clusterSize;
+        while (!_messenger.sendMessage(_cluster_map[_leaderID], serializedRequest)) {
+            _leaderID = (_leaderID + 1) % _cluster_map.size();
             if (_leaderID == 0) ++_leaderID;
         }
 
