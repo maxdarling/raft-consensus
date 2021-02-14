@@ -28,13 +28,9 @@ void Networker::listenerRoutine() {
 
         // add this connection to be polled 
         std::lock_guard<std::mutex> lock(_m);
-        if (_pfds_size == _pfds_capacity) {
-            _pfds_capacity *= 2;
-            _pfds = (struct pollfd*) realloc(_pfds, _pfds_capacity);
-        }
-        _pfds[_pfds_size].fd = connfd;
-        _pfds[_pfds_size].events = POLLIN;
-        ++_pfds_size;
+        _pfds.push_back({});
+        _pfds.back().fd = connfd;
+        _pfds.back().events = POLLIN;
     } 
 }
 
@@ -50,10 +46,6 @@ Networker::Networker(const short port) {
     _addr.sin_family = AF_INET; // use IPv4
     _addr.sin_addr.s_addr = INADDR_ANY; // use local IP
     _addr.sin_port = htons(port);
-
-    _pfds_size = 0;
-    _pfds_capacity = 10;
-    _pfds = (pollfd*) malloc(sizeof(pollfd) * _pfds_capacity);
 
     // create the dedicated listening socket
     if((_listenfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -86,7 +78,7 @@ Networker::Networker(const short port) {
  * Cleanup resources on program exit. 
  */
 Networker::~Networker() {
-    free(_pfds);
+    // todo: free background thread??
 }
 
 
@@ -119,21 +111,21 @@ int Networker::getNextReadableFd(bool shouldBlock) {
             timeout = 100; // must still use finite timeout to let pfds expand
             while (true) {
                 std::lock_guard<std::mutex> lock(_m);
-                if (poll(_pfds, _pfds_size, timeout) > 0) {
+                if (poll(&_pfds[0], (nfds_t) _pfds.size(), timeout) > 0) {
                     break;
                 }
             }
         } else {
             std::lock_guard<std::mutex> lock(_m);
             timeout = 0;
-            if (poll(_pfds, _pfds_size, timeout) == 0) {
+            if (poll(&_pfds[0], (nfds_t) _pfds.size(), timeout) == 0) {
                 return -1;
             }
         }
 
         // some fd's are now ready to read!
         std::lock_guard<std::mutex> lock(_m);
-        for (int i = 0; i < _pfds_size; ++i) {
+        for (int i = 0; i < _pfds.size(); ++i) {
             if (_pfds[i].revents & POLLIN) {
                 _readableFds.push(_pfds[i].fd);
             }
@@ -192,15 +184,17 @@ int Networker::readAll(const int connfd, void* buf, int bytesToRead) {
         // orderly shutdown, or an error ocurred
         if (n == 0 || n < 0) {
             // disassociate with this fd 
-            std::lock_guard<std::mutex> lock(_m);
-            close(connfd);
-            for (int i = 0; i < _pfds_size; ++i) {
-                if (_pfds[i].fd == connfd) {
-                    std::swap(_pfds[i], _pfds[_pfds_size - 1]);
-                    --_pfds_size;
-                    break;
-                }
-            }
+            // todo: after thread architecture change, each thread will do this better...
+            //       for now, this is very awkward to force the read call to block.
+            // std::lock_guard<std::mutex> lock(_m);
+            // close(connfd);
+            // for (int i = 0; i < _pfds_size; ++i) {
+            //     if (_pfds[i].fd == connfd) {
+            //         std::swap(_pfds[i], _pfds[_pfds_size - 1]);
+            //         --_pfds_size;
+            //         break;
+            //     }
+            // }
             return -1; 
         }
         bytesRead += n;

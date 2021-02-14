@@ -41,14 +41,12 @@ class Networker {
         int _listenfd;
         sockaddr_in _addr;
 
-        /* synchronize accesses of the polling table */
-        std::mutex _m;
-
         /* table of polled file descriptors */
-        struct pollfd* _pfds;
-        int _pfds_size; 
-        int _pfds_capacity;
+        vector<struct pollfd> _pfds;
 
         /* container of file descriptors that are ready to read from */
         queue<int> _readableFds;
+
+        /* synchronize accesses of the polling table and fd queue */
+        std::mutex _m;
 };

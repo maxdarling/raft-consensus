@@ -93,6 +93,10 @@ bool Messenger::sendMessage(std::string hostAndPort, std::string message) {
         }
         cout << "connection established with " << hostAndPort << endl;
         _hostAndPortToFd[hostAndPort] = connfd;
+
+        // poll this connection for replies in the future
+        // todo: 
+
     }
     connfd = _hostAndPortToFd[hostAndPort];
 
