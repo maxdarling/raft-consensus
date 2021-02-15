@@ -1,15 +1,22 @@
 #include "Messenger.h"
 
-/* for 'close()', 'sleep()' */
-#include <unistd.h>
-
-/* for 'inet_addr()' */
+/* low-level networking */
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h> 
+#include <poll.h>
 
+/* general */
+#include <unistd.h>
+#include <cassert>
 #include <iostream>
+#include <thread>
+
 using std::cout, std::endl;
 
+int sendEntireMessage(const int connfd, const void* buf, const int length);
+int readEntireMessage(const int connfd, void* buf, int bytesToRead);
 /** 
  * ~~~~~~ Design Notes ~~~~~~
  * 
@@ -20,17 +27,119 @@ using std::cout, std::endl;
  */ 
 
 
+/**
+ * Messenger constructor.
+ * 
+ * Note: port should be in host-byte order. 
+ */
+Messenger::Messenger(const int myPort) : _myPort(myPort) {
+    // start a networker on our assigned port
+    // change: listener thread
+    std::thread listener(&Messenger::listenerRoutine, this);
+    listener.detach();
+
+    // start message collection background thread
+    std::thread collector(&Messenger::collectMessagesRoutine, this);
+    collector.detach();
+
+    sleep(5);
+    cout << "finished messenger constructor "<< endl;
+}
+
+
+/**
+ * Class destructor. 
+ */
+Messenger::~Messenger() {
+}
+
+
+/**
+ * Background thread routine to accept incoming connection requeuests.
+ */
+void Messenger::listenerRoutine() {
+    //initialize members
+    sockaddr_in addr;
+    memset(&addr, '0', sizeof(addr));
+    addr.sin_family = AF_INET; // use IPv4
+    addr.sin_addr.s_addr = INADDR_ANY; // use local IP
+    addr.sin_port = htons(_myPort);
+
+    // create the dedicated listening socket
+    if((_listenfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("\n Error : socket() failed \n");
+        exit(EXIT_FAILURE);
+    } 
+    // to prevent 'bind() failed: address already in use' errors on restarting
+    int enable = 1;
+    if (setsockopt(_listenfd, SOL_SOCKET, SO_REUSEADDR,  // todo: sigpipe disable
+                   &enable, sizeof(int)) < 0) {
+        perror("\n Error : setsockopt() failed \n");
+        exit(EXIT_FAILURE);
+    }
+    if (bind(_listenfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        perror("\n Error : bind() failed \n");
+        exit(EXIT_FAILURE);
+    }
+    int MAX_BACKLOG_CONNECTIONS = 20;
+    if (listen(_listenfd, MAX_BACKLOG_CONNECTIONS) < 0) {
+        perror("\n Error : listen() failed \n");
+        exit(EXIT_FAILURE);
+    }
+
+
+    // Start actual listener routine
+    while(true) {
+        int connfd = accept(_listenfd, nullptr, nullptr); 
+
+        // add this connection to be polled 
+        std::lock_guard<std::mutex> lock(_m);
+        _pfds.push_back({});
+        _pfds.back().fd = connfd;
+        _pfds.back().events = POLLIN;
+    } 
+}
+
+/**
+ * Return a file descriptor on which data is available to read, or -1 if 
+ * no such descriptors are available.  
+ * 
+ * Temporarily non-blocking for refactoring 
+ */
+int Messenger::getNextReadableFd() {
+    std::lock_guard<std::mutex> lock(_m);
+    int timeout = 0;
+    if (poll(&_pfds[0], (nfds_t) _pfds.size(), timeout) == 0) {
+        return -1;
+    }
+
+    // some fd's are now ready to read!
+    for (int i = 0; i < _pfds.size(); ++i) {
+        if (_pfds[i].revents & POLLIN) {
+            _readableFds.push(_pfds[i].fd);
+        }
+    }
+
+    int result_fd = _readableFds.front();
+    _readableFds.pop();
+    return result_fd;
+}
+
+
 /** 
  * Background thread routine to read incoming messages and place them in the 
  * message queue.  
  */
 void Messenger::collectMessagesRoutine() {
     while(true) {
-        int connfd = _networker->getNextReadableFd(true);
+        int connfd = getNextReadableFd();
+        if (connfd == -1) {
+            continue;
+        }
 
         // read the message length first
         int msgLength;
-        int n = _networker->readAll(connfd, &msgLength, sizeof(msgLength));
+        int n = readEntireMessage(connfd, &msgLength, sizeof(msgLength));
         if (n != sizeof(msgLength)) {
             continue;
         }
@@ -38,7 +147,7 @@ void Messenger::collectMessagesRoutine() {
 
         // read the message itself
         char msgBuf [msgLength];
-        n = _networker->readAll(connfd, msgBuf, sizeof(msgBuf));
+        n = readEntireMessage(connfd, msgBuf, sizeof(msgBuf));
         if (n != msgLength) {
             continue;
         }
@@ -49,30 +158,6 @@ void Messenger::collectMessagesRoutine() {
 }
 
 
-/**
- * Messenger constructor.
- * 
- * Note: port should be in host-byte order. 
- */
-Messenger::Messenger(const int myPort) {
-    // start a networker on our assigned port
-    _networker = new Networker(myPort);
-
-    // start message collection background thread
-    std::thread th(&Messenger::collectMessagesRoutine, this);
-    th.detach();
-
-    sleep(5);
-    cout << "finished messenger constructor (client)" << endl;
-}
-
-
-/**
- * Class destructor. 
- */
-Messenger::~Messenger() {
-    free(_networker);
-}
 
 
 /**
@@ -104,9 +189,9 @@ bool Messenger::sendMessage(std::string hostAndPort, std::string message) {
     int msgLength = htonl(message.length()); 
 
     // send message length and body
-    if ((_networker->sendAll(connfd, &msgLength, sizeof(msgLength)) != 
+    if ((sendEntireMessage(connfd, &msgLength, sizeof(msgLength)) != 
                                                 sizeof(msgLength)) ||      
-        (_networker->sendAll(connfd, message.c_str(), message.length()) != 
+        (sendEntireMessage(connfd, message.c_str(), message.length()) != 
                                                     message.length())) {
 
         /* if the message failed to send, assume the socket is dead and close
@@ -164,4 +249,46 @@ int Messenger::establishConnection(std::string hostAndPort) {
     } 
 
     return connfd; 
+}
+
+int sendEntireMessage(const int connfd, const void* buf, const int length) { 
+    int bytesWritten = 0;
+    while (bytesWritten < length) {
+        // todo: fix this broken check (disable sigpip, we should be able to write to closed socket)
+        int checkEOF = recv(connfd, nullptr, 1, MSG_DONTWAIT);
+        if (checkEOF == 0) {
+            return -1;
+        }
+        // flag: disable error signal handling for this call. 
+        int n = send(connfd, (char *)buf + bytesWritten, 
+                     length - bytesWritten, MSG_NOSIGNAL);
+        if (n < 0) {
+            return -1; 
+        }
+        bytesWritten += n;
+    }
+    return bytesWritten;
+}
+
+
+/** 
+ * Read 'bytesToRead' bytes from a peer's socket. Returns the number of bytes
+ * read, or -1 if there was an error.
+ * 
+ * If the peer closed the connection or an error ocurred while reading, 
+ * the socket will be closed.
+ */
+int readEntireMessage(const int connfd, void* buf, int bytesToRead) {
+    int bytesRead = 0;
+    while (bytesRead < bytesToRead) {
+        int n = recv(connfd, (char *)buf + bytesRead, 
+                     bytesToRead - bytesRead, MSG_NOSIGNAL);
+        // orderly shutdown, or an error ocurred
+        if (n == 0 || n < 0) {
+            // todo: should remove from polling 
+            return -1; 
+        }
+        bytesRead += n;
+    }
+    return bytesRead;
 }

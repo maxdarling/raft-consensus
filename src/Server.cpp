@@ -2,6 +2,7 @@
 #include <array>
 #include <fstream>   // for ifstream, ofstream
 #include <iostream> 
+#include <thread>
 
 using std::cout, std::endl;
 

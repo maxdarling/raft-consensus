@@ -1,7 +1,12 @@
-#include "Networker.h"
-#include <unordered_set>
+//#include "Networker.h"
+#include <unordered_map>
+#include <vector>
+#include <queue>
+#include <mutex>
 
-using std::unordered_set;
+using std::unordered_map;
+using std::vector;
+using std::queue; 
 
 
 /**
@@ -26,9 +31,25 @@ class Messenger {
     
         int establishConnection(std::string hostAndPort);
 
-        /* manage network-level communications */
-        Networker* _networker; 
+        /* NETWORKER FIELDS */
+        /* background thread routine to manage incoming connections */
+        void listenerRoutine();
+        int getNextReadableFd();
 
+        /* networking information for this instance */
+        int _listenfd;
+        int _myPort;
+
+        /* table of polled file descriptors */
+        vector<struct pollfd> _pfds;
+
+        /* container of file descriptors that are ready to read from */
+        queue<int> _readableFds;
+
+        /* synchronize accesses of the polling table and fd queue */
+        //std::mutex _m;
+
+        /* END NETWORKER FIELDS */
 
         /* maps addresses for healthy connections to the associated socket */
         unordered_map<std::string, int> _hostAndPortToFd;

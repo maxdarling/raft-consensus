@@ -74,61 +74,23 @@ Networker::Networker(const short port) {
 }
 
 
-/** 
- * Cleanup resources on program exit. 
- */
-Networker::~Networker() {
-    // todo: free background thread??
-}
-
-
-/**
- * Creates an outbound connection with a server at the specified address,
- * and returns the associated file descriptor or -1 on an error. 
- */
-int Networker::establishConnection(const sockaddr_in& serv_addr) {
-    int connfd;
-    if((connfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        return -1;
-    } 
-    if(connect(connfd, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        return -1;
-    } 
-
-    return connfd; 
-}
-
-
 /**
  * Return a file descriptor on which data is available to read, or -1 if 
  * no such descriptors are available.  
+ * 
+ * Temporarily non-blocking for refactoring 
  */
-int Networker::getNextReadableFd(bool shouldBlock) {
-    // if no readable fd's left, check for more with poll() 
-    if (_readableFds.size() == 0) {
-        int timeout; // (ms)
-        if (shouldBlock) {
-            timeout = 100; // must still use finite timeout to let pfds expand
-            while (true) {
-                std::lock_guard<std::mutex> lock(_m);
-                if (poll(&_pfds[0], (nfds_t) _pfds.size(), timeout) > 0) {
-                    break;
-                }
-            }
-        } else {
-            std::lock_guard<std::mutex> lock(_m);
-            timeout = 0;
-            if (poll(&_pfds[0], (nfds_t) _pfds.size(), timeout) == 0) {
-                return -1;
-            }
-        }
+int Networker::getNextReadableFd() {
+    std::lock_guard<std::mutex> lock(_m);
+    int timeout = 0;
+    if (poll(&_pfds[0], (nfds_t) _pfds.size(), timeout) == 0) {
+        return -1;
+    }
 
-        // some fd's are now ready to read!
-        std::lock_guard<std::mutex> lock(_m);
-        for (int i = 0; i < _pfds.size(); ++i) {
-            if (_pfds[i].revents & POLLIN) {
-                _readableFds.push(_pfds[i].fd);
-            }
+    // some fd's are now ready to read!
+    for (int i = 0; i < _pfds.size(); ++i) {
+        if (_pfds[i].revents & POLLIN) {
+            _readableFds.push(_pfds[i].fd);
         }
     }
 
@@ -183,18 +145,7 @@ int Networker::readAll(const int connfd, void* buf, int bytesToRead) {
                      bytesToRead - bytesRead, MSG_NOSIGNAL);
         // orderly shutdown, or an error ocurred
         if (n == 0 || n < 0) {
-            // disassociate with this fd 
-            // todo: after thread architecture change, each thread will do this better...
-            //       for now, this is very awkward to force the read call to block.
-            // std::lock_guard<std::mutex> lock(_m);
-            // close(connfd);
-            // for (int i = 0; i < _pfds_size; ++i) {
-            //     if (_pfds[i].fd == connfd) {
-            //         std::swap(_pfds[i], _pfds[_pfds_size - 1]);
-            //         --_pfds_size;
-            //         break;
-            //     }
-            // }
+            // todo: should remove from polling 
             return -1; 
         }
         bytesRead += n;
