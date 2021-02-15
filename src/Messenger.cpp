@@ -70,7 +70,7 @@ void Messenger::listenerRoutine() {
     } 
     // to prevent 'bind() failed: address already in use' errors on restarting
     int enable = 1;
-    if (setsockopt(_listenfd, SOL_SOCKET, SO_REUSEADDR,  // todo: sigpipe disable
+    if (setsockopt(_listenfd, SOL_SOCKET, SO_REUSEADDR,
                    &enable, sizeof(int)) < 0) {
         perror("\n Error : setsockopt() failed \n");
         exit(EXIT_FAILURE);
@@ -269,12 +269,7 @@ int Messenger::establishConnection(std::string hostAndPort) {
 int sendEntireMessage(const int connfd, const void* buf, const int length) { 
     int bytesWritten = 0;
     while (bytesWritten < length) {
-        // todo: fix this broken check (disable sigpip, we should be able to write to closed socket)
-        int checkEOF = recv(connfd, nullptr, 1, MSG_DONTWAIT);
-        if (checkEOF == 0) {
-            return -1;
-        }
-        // flag: disable error signal handling for this call. 
+        // 'MSG_NOSIGNAL': disable sigpipe in case write fails
         int n = send(connfd, (char *)buf + bytesWritten, 
                      length - bytesWritten, MSG_NOSIGNAL);
         if (n < 0) {
