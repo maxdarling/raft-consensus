@@ -18,39 +18,36 @@ protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS src/RaftRPC.proto)
 set(SERVER_SRCS
   src/Server.cpp
   src/Messenger.cpp
-  src/Networker.cpp
   src/util.cpp
   ${PROTO_SRCS})
 
 set(SERVER_HDRS
   src/Server.h
   src/Messenger.h
-  src/Networker.h
   src/util.h
+  src/BlockingQueue.h
   ${PROTO_HDRS})
 
 set(CLIENT_SRCS
   src/Client.cpp
   src/Messenger.cpp
-  src/Networker.cpp
   src/util.cpp
   ${PROTO_SRCS})
 
 set(CLIENT_HDRS
   src/Client.h
   src/Messenger.h
-  src/Networker.h
   src/util.h
+  src/BlockingQueue.h
   ${PROTO_HDRS})
 
 set(TEST_SRCS
-  src/Networker.cpp
   src/Messenger.cpp
   ${PROTO_SRCS})
 
 set(TEST_HDRS
-  src/Networker.h
   src/Messenger.h
+  src/BlockingQueue.h
   ${PROTO_HDRS})
 
 # add the executables

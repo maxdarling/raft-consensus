@@ -2,20 +2,18 @@
 
 /* low-level networking */
 #include <arpa/inet.h>
+#include <condition_variable>
 #include <mutex>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h> 
-#include <poll.h>
 
 /* general */
 #include <unistd.h>
 #include <cassert>
 #include <iostream>
 #include <thread>
-#include <chrono>
 
-using namespace std::chrono_literals;
 using std::cout, std::endl;
 
 int sendEntireMessage(const int connfd, const void* buf, const int length);
@@ -86,14 +84,6 @@ void Messenger::listenerRoutine() {
     }
 
 
-    /*
-    Listening thread: accept new connections. Add them to the requests poll table. 
-    In getNextRequest, a non-blocking poll will be called, and the results of that single
-    call will cause message readers to be dispatched. getNextRequest will then block until it's 
-    message queue is non-empty using a cv_wait_until. 
-    */
-
-
     // Start actual listener routine
     while(true) {
         int sockfd = accept(_listenfd, nullptr, nullptr); 
@@ -101,7 +91,7 @@ void Messenger::listenerRoutine() {
             perror("accept failed\n");
         }
         // start a reader for this socket's lifetime
-        std::thread reader(&Messenger::readMessageTask, this, sockfd);
+        std::thread reader(&Messenger::readMessagesTask, this, sockfd);
         reader.detach();
     } 
 }
@@ -111,7 +101,7 @@ void Messenger::listenerRoutine() {
  * worker task: read an entire message on a socket. dispatched by poller when a message
  * is detected. 
  */
- void Messenger::readMessageTask(int sockfd) {
+void Messenger::readMessagesTask(int sockfd) {
     while(true) {
         int msgLength;
         int n = readEntireMessage(sockfd, &msgLength, sizeof(msgLength));
@@ -120,7 +110,7 @@ void Messenger::listenerRoutine() {
             close(sockfd);
             return;
         }
-        
+
         // read the message itself
         char msgBuf [msgLength];
         n = readEntireMessage(sockfd, msgBuf, sizeof(msgBuf));
@@ -129,54 +119,83 @@ void Messenger::listenerRoutine() {
             close(sockfd);
             return;
         }
-        std::lock_guard<std::mutex> lock(_m);
-        _messageQueue.push(std::string(msgBuf, sizeof(msgBuf)));
+        _messageQueue.blockingPush(std::string(msgBuf, sizeof(msgBuf)));
         cout << "Got a message of length " << msgLength << endl;
-
     }
- }
+}
+
+/**
+ * worker task: continually send messages when they're put in your queue. 
+ */
+void Messenger::sendMessagesTask(int sockfd) {
+    // todo: these accesses are vulnerable to the overall map being reallocated, no? 
+    BlockingQueue<std::string>& outBoundMessages = _socketToSenderState[sockfd]->outboundMessages;
+    std::string& hostAndPort = _socketToSenderState[sockfd]->hostAndPort;
+
+    while(true) {
+        // wait for a message to be ready to sent
+        std::string message = outBoundMessages.blockingPop();
+
+        int msgLength = message.length();
+
+        // send message length and body
+        if ((sendEntireMessage(sockfd, &msgLength, sizeof(msgLength)) != 
+                                                    sizeof(msgLength)) ||      
+            (sendEntireMessage(sockfd, message.c_str(), message.length()) != 
+                                                        message.length())) {
+
+            /* if the message failed to send, we don't close the socket and let the 
+            reader to that instead. however, we do remove this entry from the map. 
+            that way, we know to try creating a new connection to this peer the next
+            time we try to send a message. 
+            
+            note: this is also safe no matter how fast/slow the reader is. if it 
+            closes before the map, great. if it closes after, the socket is still open,
+            meaning that a map entry for it cannot be created and overwrite us.  
+            */
+            std::lock_guard<std::mutex> lock(_m);
+            _hostAndPortToFd.erase(hostAndPort); // map can only contain live connections
+            cout << "sender: message failed to send. aborting connection to " << hostAndPort << endl;
+            return;
+        }
+        cout << "sender: sent a message with length " << message.length() << endl;
+    }
+}
 
 
 /**
- * Send a message to the designated address. Returns true if sent successfully, 
- * or false if the message couldn't be sent. 
+ * Send a message to the designated address. 
+ * 
+ * Returns true if the connection was healthy for the send, false if the 
+ * connection cound't be made. This method does NOT return true if the message
+ * was sent successfully - it instead operates on a best-effort basis. 
  * 
  * If there is not an existing connection to the peer, one will be made. 
  * If sending a message fails, the connection is scrapped and the socket is closed. 
  */
 bool Messenger::sendMessage(std::string hostAndPort, std::string message) { 
     // make a connection if it's the first time sending to this address
-    int connfd;
+    int sockfd;
+    std::lock_guard<std::mutex> lock(_m);
     if (!_hostAndPortToFd.count(hostAndPort)) {
-        connfd = Messenger::establishConnection(hostAndPort);
-        if (connfd == -1) {
+        sockfd = Messenger::establishConnection(hostAndPort);
+        if (sockfd == -1) {
             cout << "connection failed to " << hostAndPort << endl;
             return false;
         }
         cout << "connection established with " << hostAndPort << endl;
-        _hostAndPortToFd[hostAndPort] = connfd;
+        _hostAndPortToFd[hostAndPort] = sockfd;
 
-        // todo: socket re-architect: use a SocketManager to send the message  
-
+        // create a message sender for this socket's lifetime
+        _socketToSenderState[sockfd] = new SenderState{{}, hostAndPort}; 
+        std::thread sender(&Messenger::sendMessagesTask, this, sockfd);
+        sender.detach();
     }
-    connfd = _hostAndPortToFd[hostAndPort];
+    sockfd = _hostAndPortToFd[hostAndPort];
 
-    int msgLength = message.length();
 
-    // send message length and body
-    if ((sendEntireMessage(connfd, &msgLength, sizeof(msgLength)) != 
-                                                sizeof(msgLength)) ||      
-        (sendEntireMessage(connfd, message.c_str(), message.length()) != 
-                                                    message.length())) {
-
-        /* if the message failed to send, assume the socket is dead and close
-         * the connection. */
-        std::lock_guard<std::mutex> lock(_m);
-        close(_hostAndPortToFd[hostAndPort]);
-        _hostAndPortToFd.erase(hostAndPort); // map can only contain valid connections
-        return false;
-    }
-    cout << "sent a message with length " << message.length() << endl;
+    // pass the message to the socket's desigated sender 
+    _socketToSenderState[sockfd]->outboundMessages.blockingPush(message);
     return true;
 }
 
@@ -184,17 +203,10 @@ bool Messenger::sendMessage(std::string hostAndPort, std::string message) {
  * Return a message if one is available.
  */
 std::optional<std::string> Messenger::getNextMessage(int timeout) {
-    std::unique_lock<std::mutex> lock(_m);
-    // wait for message queue to fill up. 
-    // todo: change timeout to be in terms of 'timeout', not 100ms
-    _cv.wait_until(lock, std::chrono::system_clock::now() + 100ms, [this](){
-        return !_messageQueue.empty();
-    });
+    std::optional<std::string> msgOpt = _messageQueue.blockingPop_timed(timeout);
 
-    if (!_messageQueue.empty()) {
-        std::string message = _messageQueue.front();
-        _messageQueue.pop();
-        return message;
+    if (msgOpt) {
+        return *msgOpt;
     } else {
         return std::nullopt;
     }

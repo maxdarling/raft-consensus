@@ -4,9 +4,9 @@
 #include <vector>
 #include <queue>
 #include <mutex>
+#include "BlockingQueue.h"
 
 using std::unordered_map;
-using std::vector;
 using std::queue; 
 
 
@@ -30,28 +30,25 @@ class Messenger {
     private:
         int establishConnection(std::string hostAndPort);
 
-        /* NETWORKER FIELDS */
         /* background thread routine to manage incoming connections */
         void listenerRoutine();
-        void readMessageTask(int sockfd);
+        void readMessagesTask(int sockfd);
+        struct SenderState {
+            BlockingQueue<std::string> outboundMessages;
+            std::string hostAndPort;
+        };
+        unordered_map<int, SenderState*> _socketToSenderState;
+        void sendMessagesTask(int sockfd);
 
         /* networking information for this instance */
         int _listenfd;
         int _myPort;
 
-        /* table of polled file descriptors */
-        vector<struct pollfd> _pfds;
-
-        /* synchronize accesses of the polling table and fd queue */
-        //std::mutex _m;
-
-        /* END NETWORKER FIELDS */
-
         /* maps addresses for healthy connections to the associated socket */
         unordered_map<std::string, int> _hostAndPortToFd;
 
         /* store collected messages */
-        queue<std::string> _messageQueue;
+        BlockingQueue<std::string> _messageQueue;
 
         std::condition_variable _cv;
 
