@@ -100,10 +100,9 @@ void Messenger::listenerRoutine() {
         if (sockfd == -1) {
             perror("accept failed\n");
         }
-        // add to pfds
-        std::lock_guard<std::mutex> lock(_m); // future todo: introduce intermediary queue so that we're not 
-                                              // adding directly to the _pfds while a poll() might be going on. 
-        _pfds.push_back({sockfd, POLLIN, 0}); 
+        // start a reader for this socket's lifetime
+        std::thread reader(&Messenger::readMessageTask, this, sockfd);
+        reader.detach();
     } 
 }
 
@@ -112,30 +111,29 @@ void Messenger::listenerRoutine() {
  * worker task: read an entire message on a socket. dispatched by poller when a message
  * is detected. 
  */
- void Messenger::readMessageTask(int sockfd, int pollTableIndex) {
-    int msgLength;
-    int n = readEntireMessage(sockfd, &msgLength, sizeof(msgLength));
-    if (n != sizeof(msgLength)) {
-        cout << "message read error: " << " read " << n << " bytes, expected " << sizeof(msgLength) << endl;
-        close(sockfd);
+ void Messenger::readMessageTask(int sockfd) {
+    while(true) {
+        int msgLength;
+        int n = readEntireMessage(sockfd, &msgLength, sizeof(msgLength));
+        if (n != sizeof(msgLength)) {
+            cout << "message read error: " << " read " << n << " bytes, expected " << sizeof(msgLength) << endl;
+            close(sockfd);
+            return;
+        }
+        
+        // read the message itself
+        char msgBuf [msgLength];
+        n = readEntireMessage(sockfd, msgBuf, sizeof(msgBuf));
+        if (n != msgLength) {
+            cout << "message read error: " << " read " << n << " bytes, expected " << msgLength << endl;
+            close(sockfd);
+            return;
+        }
         std::lock_guard<std::mutex> lock(_m);
-        _pfds[pollTableIndex].events = 0; // future: can do something more elaborate. remove self, ask to be removed by poller.
-        return;
-    }
+        _messageQueue.push(std::string(msgBuf, sizeof(msgBuf)));
+        cout << "Got a message of length " << msgLength << endl;
 
-    // read the message itself
-    char msgBuf [msgLength];
-    n = readEntireMessage(sockfd, msgBuf, sizeof(msgBuf));
-    if (n != msgLength) {
-        cout << "message read error: " << " read " << n << " bytes, expected " << msgLength << endl;
-        close(sockfd);
-        std::lock_guard<std::mutex> lock(_m);
-        _pfds[pollTableIndex].events = 0;  
-        return;
     }
-    std::lock_guard<std::mutex> lock(_m);
-    _messageQueue.push(std::string(msgBuf, sizeof(msgBuf)));
-    cout << "Got a message of length " << msgLength << endl;
  }
 
 
@@ -186,35 +184,7 @@ bool Messenger::sendMessage(std::string hostAndPort, std::string message) {
  * Return a message if one is available.
  */
 std::optional<std::string> Messenger::getNextMessage(int timeout) {
-    /*
-        check if the queue is full or not. if it has something, easy, return it. 
-        if not, do a non-blocking poll 1x and see if we have any messages. if so, 
-        dispatch. then, wait on the queue to fill back up. 
-    */
     std::unique_lock<std::mutex> lock(_m);
-    if (!_messageQueue.empty()) {
-        std::string message = _messageQueue.front();
-        _messageQueue.pop();
-        return message;
-    }
-
-    // else: poll and dispatch
-    int nReady = poll(&_pfds[0], (nfds_t) _pfds.size(), timeout);  // todo: 'timeout / 2'
-    if (nReady == 0) {
-        return std::nullopt;
-    } else if (nReady < 0) {
-        perror("poll error\n");
-        return std::nullopt;
-    }
-
-    // there's messages to dispatch on!
-    for (int i = 0; i < _pfds.size(); ++i) {
-        if (_pfds[i].revents & POLLIN) { // todo: check error and close events, too
-            std::thread reader(&Messenger::readMessageTask, this, _pfds[i].fd, i);
-            reader.detach();
-        }
-    }
-
     // wait for message queue to fill up. 
     // todo: change timeout to be in terms of 'timeout', not 100ms
     _cv.wait_until(lock, std::chrono::system_clock::now() + 100ms, [this](){
@@ -264,6 +234,11 @@ int Messenger::establishConnection(std::string hostAndPort) {
     return connfd; 
 }
 
+
+/** 
+ * Send 'length' bytes from a socket. Returns the number of bytes
+ * read, or -1 if there was an error.
+ */
 int sendEntireMessage(const int connfd, const void* buf, const int length) { 
     int bytesWritten = 0;
     while (bytesWritten < length) {
@@ -280,11 +255,8 @@ int sendEntireMessage(const int connfd, const void* buf, const int length) {
 
 
 /** 
- * Read 'bytesToRead' bytes from a peer's socket. Returns the number of bytes
+ * Read 'bytesToRead' bytes from a socket. Returns the number of bytes
  * read, or -1 if there was an error.
- * 
- * If the peer closed the connection or an error ocurred while reading, 
- * the socket will be closed.
  */
 int readEntireMessage(const int connfd, void* buf, int bytesToRead) {
     int bytesRead = 0;
@@ -293,7 +265,6 @@ int readEntireMessage(const int connfd, void* buf, int bytesToRead) {
                      bytesToRead - bytesRead, MSG_NOSIGNAL);
         // orderly shutdown, or an error ocurred
         if (n == 0 || n < 0) {
-            // todo: should remove from polling 
             return -1; 
         }
         bytesRead += n;

@@ -33,7 +33,7 @@ class Messenger {
         /* NETWORKER FIELDS */
         /* background thread routine to manage incoming connections */
         void listenerRoutine();
-        void readMessageTask(int sockfd, int pollTableIndex);
+        void readMessageTask(int sockfd);
 
         /* networking information for this instance */
         int _listenfd;
