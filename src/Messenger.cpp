@@ -122,7 +122,6 @@ void Messenger::listenerRoutine() {
         _pfds[pollTableIndex].events = 0; // future: can do something more elaborate. remove self, ask to be removed by poller.
         return;
     }
-    msgLength = ntohl(msgLength); // convert to host order before use
 
     // read the message itself
     char msgBuf [msgLength];
@@ -164,8 +163,7 @@ bool Messenger::sendMessage(std::string hostAndPort, std::string message) {
     }
     connfd = _hostAndPortToFd[hostAndPort];
 
-    // todo: determine if we actually need to do this conversion on both ends. 
-    int msgLength = htonl(message.length()); 
+    int msgLength = message.length();
 
     // send message length and body
     if ((sendEntireMessage(connfd, &msgLength, sizeof(msgLength)) != 
