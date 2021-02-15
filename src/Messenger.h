@@ -27,6 +27,16 @@ class Messenger {
         std::optional<std::string> getNextMessage();
 
     private:
+        // store all necessary state for a socket manager worker thread
+        struct SocketManagerState {
+            int sockfd;
+            queue<std::string> outboundMessages;
+        };
+        // thread routine for socket manager to execute
+        void sendAndReceiveMessagesTask(SocketManagerState* state);
+        unordered_map<int, SocketManagerState> _socketTable;
+
+
         void collectMessagesRoutine();
     
         int establishConnection(std::string hostAndPort);
@@ -34,7 +44,6 @@ class Messenger {
         /* NETWORKER FIELDS */
         /* background thread routine to manage incoming connections */
         void listenerRoutine();
-        int getNextReadableFd();
 
         /* networking information for this instance */
         int _listenfd;
@@ -42,9 +51,6 @@ class Messenger {
 
         /* table of polled file descriptors */
         vector<struct pollfd> _pfds;
-
-        /* container of file descriptors that are ready to read from */
-        queue<int> _readableFds;
 
         /* synchronize accesses of the polling table and fd queue */
         //std::mutex _m;

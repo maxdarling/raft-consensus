@@ -7,6 +7,9 @@ project(raft)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+# for use with clangd
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # generate protobuf cpp files
 find_package(Protobuf REQUIRED)
 include_directories(${PROTOBUF_INCLUDE_DIRS})
