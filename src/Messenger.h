@@ -1,4 +1,5 @@
 //#include "Networker.h"
+#include <condition_variable>
 #include <unordered_map>
 #include <vector>
 #include <queue>
@@ -24,7 +25,7 @@ class Messenger {
         /* send a message to the peer at "127.0.0.95:8000", for example */
         bool sendMessage(std::string hostAndPort, std::string message); 
 
-        std::optional<std::string> getNextMessage();
+        std::optional<std::string> getNextMessage(int timeout = 0);
 
     private:
         int establishConnection(std::string hostAndPort);
@@ -51,6 +52,8 @@ class Messenger {
 
         /* store collected messages */
         queue<std::string> _messageQueue;
+
+        std::condition_variable _cv;
 
         /* synchronize access to message queue for caller and background thread */
         std::mutex _m;

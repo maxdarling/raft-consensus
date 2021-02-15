@@ -2,6 +2,7 @@
 
 /* low-level networking */
 #include <arpa/inet.h>
+#include <mutex>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h> 
@@ -12,7 +13,9 @@
 #include <cassert>
 #include <iostream>
 #include <thread>
+#include <chrono>
 
+using namespace std::chrono_literals;
 using std::cout, std::endl;
 
 int sendEntireMessage(const int connfd, const void* buf, const int length);
@@ -83,42 +86,24 @@ void Messenger::listenerRoutine() {
     }
 
 
-    // start the polling table with just the listenfd initially
-    _pfds.push_back({_listenfd, POLLIN, 0});
+    /*
+    Listening thread: accept new connections. Add them to the requests poll table. 
+    In getNextRequest, a non-blocking poll will be called, and the results of that single
+    call will cause message readers to be dispatched. getNextRequest will then block until it's 
+    message queue is non-empty using a cv_wait_until. 
+    */
+
 
     // Start actual listener routine
     while(true) {
-        if (poll(&_pfds[0], (nfds_t) _pfds.size(), -1) <= 0) {
-            cout << "polling error" << endl;
-            continue;
+        int sockfd = accept(_listenfd, nullptr, nullptr); 
+        if (sockfd == -1) {
+            perror("accept failed\n");
         }
-        /**
-         * Procedure: for each readable fd, either accept a new connection (listener fd), or 
-         * spawn a thread to blockingly read a message from it in entirety. 
-        */
-        for (int i = 0; i < _pfds.size(); ++i) {
-            if (_pfds[i].revents & POLLIN) {
-                if (i == 0 && _pfds[i].fd == _listenfd) {
-                    // listener case: add this thread to the table
-                    int socketfd = accept(_listenfd, nullptr, nullptr); 
-                    if (socketfd == -1) {
-                        perror("accept");
-                    }
-                    _pfds.push_back({socketfd, POLLIN, 0});
-                    cout << "accepted new thread!" << endl;
-                }
-                else {
-                    // message case: spawn a thread to read it
-                    int sockfd = _pfds[i].fd;
-                    _pfds[i].events = 0; 
-                    cout << "started reader for socket " << sockfd << endl;
-                    std::thread reader(&Messenger::readMessageTask, this, sockfd, i);
-                    reader.detach();
-                    // if the message is read correctly, the read will turn polling for 
-                    // the socket back on. if not, it's left turned off. 
-                }
-            }
-        }
+        // add to pfds
+        std::lock_guard<std::mutex> lock(_m); // future todo: introduce intermediary queue so that we're not 
+                                              // adding directly to the _pfds while a poll() might be going on. 
+        _pfds.push_back({sockfd, POLLIN, 0}); 
     } 
 }
 
@@ -133,6 +118,8 @@ void Messenger::listenerRoutine() {
     if (n != sizeof(msgLength)) {
         cout << "message read error: " << " read " << n << " bytes, expected " << sizeof(msgLength) << endl;
         close(sockfd);
+        std::lock_guard<std::mutex> lock(_m);
+        _pfds[pollTableIndex].events = 0; // future: can do something more elaborate. remove self, ask to be removed by poller.
         return;
     }
     msgLength = ntohl(msgLength); // convert to host order before use
@@ -143,12 +130,13 @@ void Messenger::listenerRoutine() {
     if (n != msgLength) {
         cout << "message read error: " << " read " << n << " bytes, expected " << msgLength << endl;
         close(sockfd);
+        std::lock_guard<std::mutex> lock(_m);
+        _pfds[pollTableIndex].events = 0;  
         return;
     }
     std::lock_guard<std::mutex> lock(_m);
     _messageQueue.push(std::string(msgBuf, sizeof(msgBuf)));
     cout << "Got a message of length " << msgLength << endl;
-    _pfds[pollTableIndex].events = POLLIN; // restore listening on this socket
  }
 
 
@@ -199,14 +187,49 @@ bool Messenger::sendMessage(std::string hostAndPort, std::string message) {
 /** 
  * Return a message if one is available.
  */
-std::optional<std::string> Messenger::getNextMessage() {
-    std::lock_guard<std::mutex> lock(_m);
-    if (_messageQueue.empty()) {
+std::optional<std::string> Messenger::getNextMessage(int timeout) {
+    /*
+        check if the queue is full or not. if it has something, easy, return it. 
+        if not, do a non-blocking poll 1x and see if we have any messages. if so, 
+        dispatch. then, wait on the queue to fill back up. 
+    */
+    std::unique_lock<std::mutex> lock(_m);
+    if (!_messageQueue.empty()) {
+        std::string message = _messageQueue.front();
+        _messageQueue.pop();
+        return message;
+    }
+
+    // else: poll and dispatch
+    int nReady = poll(&_pfds[0], (nfds_t) _pfds.size(), timeout);  // todo: 'timeout / 2'
+    if (nReady == 0) {
+        return std::nullopt;
+    } else if (nReady < 0) {
+        perror("poll error\n");
         return std::nullopt;
     }
-    std::string message = _messageQueue.front();
-    _messageQueue.pop();
-    return message;
+
+    // there's messages to dispatch on!
+    for (int i = 0; i < _pfds.size(); ++i) {
+        if (_pfds[i].revents & POLLIN) { // todo: check error and close events, too
+            std::thread reader(&Messenger::readMessageTask, this, _pfds[i].fd, i);
+            reader.detach();
+        }
+    }
+
+    // wait for message queue to fill up. 
+    // todo: change timeout to be in terms of 'timeout', not 100ms
+    _cv.wait_until(lock, std::chrono::system_clock::now() + 100ms, [this](){
+        return !_messageQueue.empty();
+    });
+
+    if (!_messageQueue.empty()) {
+        std::string message = _messageQueue.front();
+        _messageQueue.pop();
+        return message;
+    } else {
+        return std::nullopt;
+    }
 }
 
 
