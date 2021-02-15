@@ -27,23 +27,12 @@ class Messenger {
         std::optional<std::string> getNextMessage();
 
     private:
-        // store all necessary state for a socket manager worker thread
-        struct SocketManagerState {
-            int sockfd;
-            queue<std::string> outboundMessages;
-        };
-        // thread routine for socket manager to execute
-        void sendAndReceiveMessagesTask(SocketManagerState* state);
-        unordered_map<int, SocketManagerState> _socketTable;
-
-
-        void collectMessagesRoutine();
-    
         int establishConnection(std::string hostAndPort);
 
         /* NETWORKER FIELDS */
         /* background thread routine to manage incoming connections */
         void listenerRoutine();
+        void readMessageTask(int sockfd, int pollTableIndex);
 
         /* networking information for this instance */
         int _listenfd;
