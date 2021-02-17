@@ -23,22 +23,34 @@ class Messenger {
         ~Messenger();
         
         /* send a message to the peer at "127.0.0.95:8000", for example */
-        bool sendMessage(std::string hostAndPort, std::string message); 
+        bool sendRequest(std::string hostAndPort, std::string message); 
+        std::optional<std::string> getNextRequest(int timeout = 0);
 
-        std::optional<std::string> getNextMessage(int timeout = 0);
+        // todo: make getNextRequest return a request
+        struct Request {
+            std::string message;
+            struct ResponseToken {
+                int fd;
+                int timestamp;
+            } responseToken;
+        };
+        bool sendResponse(Request::ResponseToken responseToken, std::string message);
+        std::optional<std::string> getNextResponse(int timeout); // todo: better timeout type? ms? 
+        std::optional<std::string> awaitResponseFrom(std::string hostAndPort, int timeout);
 
     private:
         int establishConnection(std::string hostAndPort);
 
         /* background thread routine to manage incoming connections */
         void listenerRoutine();
-        void readMessagesTask(int sockfd);
+        void receiveRequestsTask(int sockfd);
+
         struct SenderState {
             BlockingQueue<std::string> outboundMessages;
             std::string hostAndPort;
         };
         unordered_map<int, SenderState*> _socketToSenderState;
-        void sendMessagesTask(int sockfd);
+        void sendRequestsTask(int sockfd);
 
         /* networking information for this instance */
         int _listenfd;

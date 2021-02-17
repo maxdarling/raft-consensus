@@ -91,7 +91,7 @@ void Messenger::listenerRoutine() {
             perror("accept failed\n");
         }
         // start a reader for this socket's lifetime
-        std::thread reader(&Messenger::readMessagesTask, this, sockfd);
+        std::thread reader(&Messenger::receiveRequestsTask, this, sockfd);
         reader.detach();
     } 
 }
@@ -101,7 +101,7 @@ void Messenger::listenerRoutine() {
  * worker task: read an entire message on a socket. dispatched by poller when a message
  * is detected. 
  */
-void Messenger::readMessagesTask(int sockfd) {
+void Messenger::receiveRequestsTask(int sockfd) {
     while(true) {
         int msgLength;
         int n = readEntireMessage(sockfd, &msgLength, sizeof(msgLength));
@@ -127,7 +127,7 @@ void Messenger::readMessagesTask(int sockfd) {
 /**
  * worker task: continually send messages when they're put in your queue. 
  */
-void Messenger::sendMessagesTask(int sockfd) {
+void Messenger::sendRequestsTask(int sockfd) {
     // todo: these accesses are vulnerable to the overall map being reallocated, no? 
     BlockingQueue<std::string>& outBoundMessages = _socketToSenderState[sockfd]->outboundMessages;
     std::string& hostAndPort = _socketToSenderState[sockfd]->hostAndPort;
@@ -173,7 +173,7 @@ void Messenger::sendMessagesTask(int sockfd) {
  * If there is not an existing connection to the peer, one will be made. 
  * If sending a message fails, the connection is scrapped and the socket is closed. 
  */
-bool Messenger::sendMessage(std::string hostAndPort, std::string message) { 
+bool Messenger::sendRequest(std::string hostAndPort, std::string message) { 
     // make a connection if it's the first time sending to this address
     int sockfd;
     std::lock_guard<std::mutex> lock(_m);
@@ -188,7 +188,7 @@ bool Messenger::sendMessage(std::string hostAndPort, std::string message) {
 
         // create a message sender for this socket's lifetime
         _socketToSenderState[sockfd] = new SenderState{{}, hostAndPort}; 
-        std::thread sender(&Messenger::sendMessagesTask, this, sockfd);
+        std::thread sender(&Messenger::sendRequestsTask, this, sockfd);
         sender.detach();
     }
     sockfd = _hostAndPortToFd[hostAndPort];
@@ -202,7 +202,7 @@ bool Messenger::sendMessage(std::string hostAndPort, std::string message) {
 /** 
  * Return a message if one is available.
  */
-std::optional<std::string> Messenger::getNextMessage(int timeout) {
+std::optional<std::string> Messenger::getNextRequest(int timeout) {
     std::optional<std::string> msgOpt = _messageQueue.blockingPop_timed(timeout);
 
     if (msgOpt) {
