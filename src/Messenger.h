@@ -18,7 +18,8 @@ using std::unordered_map;
  */
 class Messenger {
     public: 
-        Messenger(int myPort); // todo: add a client version so we only listen on server instances.  
+        Messenger(int myPort); // server instance w/ listener 
+        Messenger();           // client instance w/o listener
         ~Messenger();
 
         struct Request {

@@ -33,7 +33,7 @@ int readEntireMessage(const int connfd, void* buf, int bytesToRead);
 
 
 /**
- * Messenger constructor.
+ * Messenger constructor for server instances. Setups up a listener on the given port.  
  * 
  * Note: port should be in host-byte order. 
  */
@@ -42,10 +42,18 @@ Messenger::Messenger(const int myPort) : _myPort(myPort) {
     std::thread listener(&Messenger::listenerRoutine, this);
     listener.detach();
 
-    sleep(5);
     cout << "finished messenger constructor "<< endl;
 }
 
+/**
+ * Messenger constructor for client instances. 
+ * 
+ * Note: port should be in host-byte order. 
+ */
+Messenger::Messenger() {
+    // start a networker on our assigned port
+    cout << "finished client messenger constructor "<< endl;
+}
 
 /**
  * Class destructor. 
