@@ -13,11 +13,15 @@
 #include <cassert>
 #include <iostream>
 #include <thread>
+#include <chrono>
 
 using std::cout, std::endl;
 
+/* convenience methods */
+int establishConnection(std::string hostAndPort);
 int sendEntireMessage(const int connfd, const void* buf, const int length);
 int readEntireMessage(const int connfd, void* buf, int bytesToRead);
+
 /** 
  * ~~~~~~ Design Notes ~~~~~~
  * 
@@ -90,9 +94,19 @@ void Messenger::listenerRoutine() {
         if (sockfd == -1) {
             perror("accept failed\n");
         }
-        // start a reader for this socket's lifetime
+        // create a socket freshness entry to that we can respond to requests safely
+        _socketToTimeCreated[sockfd] = std::chrono::system_clock::now(); 
+
+        // start a request reader for this socket's lifetime
+        //std::thread reader(&Messenger::receiveMessagesTask, this, sockfd, &_requestQueue);
         std::thread reader(&Messenger::receiveRequestsTask, this, sockfd);
         reader.detach();
+
+        // create a message sender for this socket's lifetime
+        _socketToSenderState[sockfd] = new SenderState{{}, ""}; 
+        std::thread sender(&Messenger::sendMessagesTask, this, sockfd);
+        sender.detach();
+
     } 
 }
 
@@ -101,6 +115,30 @@ void Messenger::listenerRoutine() {
  * worker task: read an entire message on a socket. dispatched by poller when a message
  * is detected. 
  */
+void Messenger::receiveMessagesTask(int sockfd, BlockingQueue<std::string>* readyMessagesPtr) {
+    auto &readyMessages = *readyMessagesPtr;
+    while(true) {
+        int msgLength;
+        int n = readEntireMessage(sockfd, &msgLength, sizeof(msgLength));
+        if (n != sizeof(msgLength)) {
+            cout << "message read error: " << " read " << n << " bytes, expected " << sizeof(msgLength) << endl;
+            close(sockfd);
+            return;
+        }
+
+        // read the message itself
+        char msgBuf [msgLength];
+        n = readEntireMessage(sockfd, msgBuf, sizeof(msgBuf));
+        if (n != msgLength) {
+            cout << "message read error: " << " read " << n << " bytes, expected " << msgLength << endl;
+            close(sockfd);
+            return;
+        }
+        readyMessages.blockingPush(std::string(msgBuf, sizeof(msgBuf)));
+        cout << "Got a message of length " << msgLength << endl;
+    }
+}
+
 void Messenger::receiveRequestsTask(int sockfd) {
     while(true) {
         int msgLength;
@@ -119,15 +157,40 @@ void Messenger::receiveRequestsTask(int sockfd) {
             close(sockfd);
             return;
         }
-        _messageQueue.blockingPush(std::string(msgBuf, sizeof(msgBuf)));
+        Request request {std::string(msgBuf, sizeof(msgBuf)), sockfd, 
+                         std::chrono::system_clock::now()};
+        _requestQueue.blockingPush(request);
+        cout << "Got a message of length " << msgLength << endl;
+    }
+}
+void Messenger::receiveResponsesTask(int sockfd) {
+    while(true) {
+        int msgLength;
+        int n = readEntireMessage(sockfd, &msgLength, sizeof(msgLength));
+        if (n != sizeof(msgLength)) {
+            cout << "message read error: " << " read " << n << " bytes, expected " << sizeof(msgLength) << endl;
+            close(sockfd);
+            return;
+        }
+
+        // read the message itself
+        char msgBuf [msgLength];
+        n = readEntireMessage(sockfd, msgBuf, sizeof(msgBuf));
+        if (n != msgLength) {
+            cout << "message read error: " << " read " << n << " bytes, expected " << msgLength << endl;
+            close(sockfd);
+            return;
+        }
+        _responseQueue.blockingPush(std::string(msgBuf, sizeof(msgBuf)));
         cout << "Got a message of length " << msgLength << endl;
     }
 }
 
+
 /**
  * worker task: continually send messages when they're put in your queue. 
  */
-void Messenger::sendRequestsTask(int sockfd) {
+void Messenger::sendMessagesTask(int sockfd) {
     // todo: these accesses are vulnerable to the overall map being reallocated, no? 
     BlockingQueue<std::string>& outBoundMessages = _socketToSenderState[sockfd]->outboundMessages;
     std::string& hostAndPort = _socketToSenderState[sockfd]->hostAndPort;
@@ -143,6 +206,8 @@ void Messenger::sendRequestsTask(int sockfd) {
                                                     sizeof(msgLength)) ||      
             (sendEntireMessage(sockfd, message.c_str(), message.length()) != 
                                                         message.length())) {
+
+            // todo: unify this logic, if we can, between request/response.  
 
             /* if the message failed to send, we don't close the socket and let the 
             reader to that instead. however, we do remove this entry from the map. 
@@ -178,7 +243,7 @@ bool Messenger::sendRequest(std::string hostAndPort, std::string message) {
     int sockfd;
     std::lock_guard<std::mutex> lock(_m);
     if (!_hostAndPortToFd.count(hostAndPort)) {
-        sockfd = Messenger::establishConnection(hostAndPort);
+        sockfd = establishConnection(hostAndPort);
         if (sockfd == -1) {
             cout << "connection failed to " << hostAndPort << endl;
             return false;
@@ -188,8 +253,13 @@ bool Messenger::sendRequest(std::string hostAndPort, std::string message) {
 
         // create a message sender for this socket's lifetime
         _socketToSenderState[sockfd] = new SenderState{{}, hostAndPort}; 
-        std::thread sender(&Messenger::sendRequestsTask, this, sockfd);
+        std::thread sender(&Messenger::sendMessagesTask, this, sockfd);
         sender.detach();
+
+        // start a response receiver for this socket's lifetime
+        //std::thread reader(&Messenger::receiveMessagesTask, this, sockfd/*, _responseQueue*/);
+        std::thread reader(&Messenger::receiveResponsesTask, this, sockfd);
+        reader.detach();
     }
     sockfd = _hostAndPortToFd[hostAndPort];
 
@@ -202,8 +272,8 @@ bool Messenger::sendRequest(std::string hostAndPort, std::string message) {
 /** 
  * Return a message if one is available.
  */
-std::optional<std::string> Messenger::getNextRequest(int timeout) {
-    std::optional<std::string> msgOpt = _messageQueue.blockingPop_timed(timeout);
+std::optional<Messenger::Request> Messenger::getNextRequest(int timeout) {
+    std::optional<Request> msgOpt = _requestQueue.blockingPop_timed(timeout);
 
     if (msgOpt) {
         return *msgOpt;
@@ -212,11 +282,49 @@ std::optional<std::string> Messenger::getNextRequest(int timeout) {
     }
 }
 
+/**
+ * Send a response to a request you've already received. 
+ *
+ * Return true if the message was sent "best-effort", or false if there was
+ * an issue sending or the destination socket was closed in the interim. 
+ */
+bool Messenger::sendResponse(Request::ResponseToken responseToken, std::string message) {
+    // perform lookup w/ responseToken to see if the socket we received the message on is the same
+    if (_socketToTimeCreated[responseToken.fd] > responseToken.timestamp) {
+        // socket is old! scrap the message
+        cout << "sendResponse: Can't respond to stale socket, aborting" << endl;
+        return false;
+    }
+
+    // pass the message to the socket's desigated sender 
+    _socketToSenderState[responseToken.fd]->outboundMessages.blockingPush(message);
+    return true;
+}
+
+
+/** 
+ * Return a message if one is available.
+ */
+std::optional<std::string> Messenger::getNextResponse(int timeout) {
+    std::optional<std::string> msgOpt = _responseQueue.blockingPop_timed(timeout);
+    if (msgOpt) {
+        return *msgOpt;
+    } else {
+        return std::nullopt;
+    }
+}
+
+// todo: implement
+std::optional<std::string> Messenger::awaitResponseFrom(std::string hostAndPort, int timeout) {
+    cout << "awaitResponseFrom: not implemented yet" << endl;
+    return std::nullopt;
+}
+
 
 // temporary establish connection method, in terms of "IP:port"
 // IP should be in standard IPv4 dotted decimal notation, ex. "127.0.0.95"
 // example: "127.0.0.95:8000"
-int Messenger::establishConnection(std::string hostAndPort) {
+int establishConnection(std::string hostAndPort) {
     // parse input string 
     int colonIdx = hostAndPort.find(":");
     std::string IPstr = hostAndPort.substr(0, colonIdx);

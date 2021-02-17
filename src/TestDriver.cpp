@@ -36,7 +36,8 @@ void MessengerTester(int serverNumber) {
     cout << "Server #" << serverNumber << " of " << nServers << " has started" << endl;
 
     // send messages
-    int n_messages_sent = 0;
+    int n_requests_sent = 0;
+    int n_responses_sent = 0;
     while(true) {
         // pick a random server to send a message to
         int peerServerNumber; 
@@ -45,21 +46,47 @@ void MessengerTester(int serverNumber) {
         std::string peerHostAndPort = "0:" + std::to_string(PORT_BASE + peerServerNumber);
         
         // construct a message
-        std::string message = "\n\n~~~~~~Message #" + std::to_string(++n_messages_sent) + 
+        std::string requestMessage = "\n\n~~~~~~Message #" + std::to_string(++n_requests_sent) + 
                               " from server #" + std::to_string(serverNumber) + "~~~~~~~\n\n";
  
+
+        // get any responses
+        std::optional<std::string> responseOpt = messenger.getNextResponse(100);
+        if (responseOpt) {
+            cout << "Response received: " << endl;
+            cout << *responseOpt << endl;
+        }
         
         // send the message
-        messenger.sendMessage(peerHostAndPort, message);
+        messenger.sendRequest(peerHostAndPort, requestMessage);
 
        sleep(5);
 
         // check for received messages
-        std::optional<std::string> incMsgWrapper = messenger.getNextMessage();
-        if (incMsgWrapper) {
-            cout << "Message received:" << endl;
-            cout << (*incMsgWrapper) << endl; 
+        std::optional<Messenger::Request> requestOpt = messenger.getNextRequest();
+        if (requestOpt) {
+            cout << "Request received:" << endl;
+            cout << (requestOpt->message) << endl; 
+            // try to send a response, too!
+            std::string responseMsg = "\n\n~~~~~~Response #" + std::to_string(++n_responses_sent) + 
+                                " from server #" + std::to_string(serverNumber) + "~~~~~~~\n\n";
+            messenger.sendResponse(requestOpt->responseToken, responseMsg);
+        } else {
+            cout << "No request message received in time" << endl;
         }
+    }
+}
+
+
+// server #1 is client, server#2 is server
+void clientServerTester(int serverNumber) {
+    if (serverNumber == 1) {
+        // client logic
+
+    } 
+    else {
+        // server logic
+
     }
 }
 

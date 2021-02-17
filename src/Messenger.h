@@ -2,12 +2,11 @@
 #include <condition_variable>
 #include <unordered_map>
 #include <vector>
-#include <queue>
 #include <mutex>
+#include <chrono>
 #include "BlockingQueue.h"
 
 using std::unordered_map;
-using std::queue; 
 
 
 /**
@@ -21,36 +20,44 @@ class Messenger {
     public: 
         Messenger(int myPort); // todo: add a client version so we only listen on server instances.  
         ~Messenger();
-        
-        /* send a message to the peer at "127.0.0.95:8000", for example */
-        bool sendRequest(std::string hostAndPort, std::string message); 
-        std::optional<std::string> getNextRequest(int timeout = 0);
 
-        // todo: make getNextRequest return a request
         struct Request {
             std::string message;
             struct ResponseToken {
                 int fd;
-                int timestamp;
+                std::chrono::time_point<std::chrono::system_clock> timestamp;
             } responseToken;
         };
+        
+        /* send a message to the peer at "127.0.0.95:8000", for example */
+        bool sendRequest(std::string hostAndPort, std::string message); 
+        std::optional<Request> getNextRequest(int timeout = 0);
+
+        // todo: make getNextRequest return a request
         bool sendResponse(Request::ResponseToken responseToken, std::string message);
         std::optional<std::string> getNextResponse(int timeout); // todo: better timeout type? ms? 
         std::optional<std::string> awaitResponseFrom(std::string hostAndPort, int timeout);
 
     private:
-        int establishConnection(std::string hostAndPort);
-
         /* background thread routine to manage incoming connections */
         void listenerRoutine();
-        void receiveRequestsTask(int sockfd);
+        void receiveMessagesTask(int sockfd, BlockingQueue<std::string>* readyMessages); // todo: get this to work. thread errors. 
 
         struct SenderState {
             BlockingQueue<std::string> outboundMessages;
-            std::string hostAndPort;
+            std::string hostAndPort; // only used for request senders to remove self from map. awkward??
         };
         unordered_map<int, SenderState*> _socketToSenderState;
-        void sendRequestsTask(int sockfd);
+        void sendMessagesTask(int sockfd);
+
+
+        // todo: merge this into one. getting issues passing blocking queue to thread. 
+        void receiveRequestsTask(int sockfd); 
+        void receiveResponsesTask(int sockfd); 
+
+        /* responses */
+        unordered_map<int, std::chrono::time_point<std::chrono::system_clock>> _socketToTimeCreated;
+
 
         /* networking information for this instance */
         int _listenfd;
@@ -60,7 +67,8 @@ class Messenger {
         unordered_map<std::string, int> _hostAndPortToFd;
 
         /* store collected messages */
-        BlockingQueue<std::string> _messageQueue;
+        BlockingQueue<Request> _requestQueue;
+        BlockingQueue<std::string> _responseQueue; 
 
         std::condition_variable _cv;
 
