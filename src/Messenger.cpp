@@ -122,12 +122,14 @@ void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
         // place the message in the appropriate queue
         std::string message(msgBuf, sizeof(msgBuf));
         if (shouldReadRequests) {
-            Request request {message, sockfd, steady_clock::now()};
+            Request request = {
+                message, 
+                Request::ResponseToken{sockfd, steady_clock::now()}
+            };
             _requestQueue.notifyingPush(request);
         } else {
             _responseQueue.notifyingPush(message);
         }
-        cout << "Got a message of length " << msgLength << endl;
     }
 
     // we broke from the loop due to an error. cleanup socket and exit. 
@@ -166,8 +168,6 @@ void Messenger::sendMessagesTask(int sockfd) {
         // send message body
         n = sendEntireMessage(sockfd, message.c_str(), message.length());
         if (n != message.length()) break;
-
-        cout << "sender: sent a message with length " << message.length() << endl;
     }
 
     // we broke from the loop due to an error. cleanup socket and exit.

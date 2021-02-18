@@ -10,6 +10,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 # for use with clangd
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# set compile flags 
+add_compile_options(-Wall -Werror)
+
 # generate protobuf cpp files
 find_package(Protobuf REQUIRED)
 include_directories(${PROTOBUF_INCLUDE_DIRS})

@@ -10,8 +10,6 @@ using std::cout;
 using std::endl;
 
 const int PORT_BASE = 5000;
-const int FIRST_SERVER_NUMBER = 1;
-const int LAST_SERVER_NUMBER = 2;
 
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ATTENTION ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 
