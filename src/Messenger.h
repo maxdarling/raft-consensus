@@ -11,15 +11,20 @@ using std::chrono::steady_clock;
  * The Messenger class implements message-based communication between servers
  * and clients.  
  * 
- * Clients: send messages to servers and get responses. 
- * Servers: respond to clients, and send/receive amongst other servers. 
+ * Client/Server Differences: 
+ *   - Clients: Send requests to servers and get back responses. 
+ *
+ *   - Servers: Get requests from and send responses to clients. 
+ *              Do anything with other severs. 
  */
 class Messenger {
     public: 
-        Messenger(int myPort); // server instance w/ listener 
-        Messenger();           // client instance w/o listener
+        Messenger(int listenPort); // server instance
+        Messenger();                 // client instance
         ~Messenger();
 
+        /* the type for a recieved request, containing the message itself and 
+           a 'ResponseToken' to be used when responding to the request. */
         struct Request {
             std::string message;
             struct ResponseToken {
@@ -28,29 +33,26 @@ class Messenger {
             } responseToken;
         };
         
-        /* send a message to the peer at "127.0.0.95:8000", for example */
         bool sendRequest(std::string hostAndPort, std::string message); 
-        std::optional<Request> getNextRequest(int timeout = 0);
-
         bool sendResponse(Request::ResponseToken responseToken, std::string message);
-        std::optional<std::string> getNextResponse(int timeout); // todo: better timeout type? ms? 
-        std::optional<std::string> awaitResponseFrom(std::string hostAndPort, int timeout);
+
+        std::optional<Request> getNextRequest(int timeoutMs);
+        std::optional<std::string> getNextResponse(int timeoutMs); 
+
+        std::optional<std::string> awaitResponseFrom(std::string hostAndPort, int timeout); // seems impossible to implement
 
     private:
         /* background thread routine to manage incoming connections */
         void listenerRoutine(int listenfd);
 
         //void receiveMessagesTask(int sockfd, BlockingQueue<std::string>* readyMessages); // todo: get this to work. thread errors. 
-        void receiveMessagesTask(int sockfd, bool isRequestReceiver);
-        // todo: merge this into one. getting issues passing blocking queue to thread. 
-        // void receiveRequestsTask(int sockfd); 
-        // void receiveResponsesTask(int sockfd); 
+        void receiveMessagesTask(int sockfd, bool shouldReadRequests);
 
         void sendMessagesTask(int sockfd);
 
         /* shared state between a socket's sender and the main dispatching thread */
         struct SocketState {
-            BlockingQueue<std::string> outboundMessages; // todo: make this a ptr. solve need to make SocketState a ptr? 
+            BlockingQueue<std::string> outboundMessages;
             std::string hostAndPort; // only used for request senders to remove self from map.
 
             // only used for response senders to check if sending is vaild 
@@ -72,5 +74,6 @@ class Messenger {
         BlockingQueue<Request> _requestQueue;
         BlockingQueue<std::string> _responseQueue; 
 
+        /* synchronize access to the maps above */  
         std::mutex _m;
 };

@@ -37,33 +37,32 @@ int readEntireMessage(const int connfd, void* buf, int bytesToRead);
 
 
 /**
- * Messenger constructor for server instances. Setups up a listener on the given port.  
+ * Creates a server instance with a listener on the given port.
  * 
  * Note: port should be in host-byte order. 
  */
-Messenger::Messenger(const int myPort) {
-    // create a listening socket
-    int listenfd = createListeningSocket(myPort);
-
+Messenger::Messenger(const int listenPort) {
     // start a background thread to listen for connections
+    int listenfd = createListeningSocket(listenPort);
     std::thread listener(&Messenger::listenerRoutine, this, listenfd);
     listener.detach();
 
-    cout << "finished messenger constructor "<< endl;
 }
 
 /**
- * Messenger constructor for client instances. 
+ * Creates a client instance.
  */
 Messenger::Messenger() {
-    // start a networker on our assigned port
-    cout << "finished client messenger constructor "<< endl;
 }
 
 /**
- * Class destructor. 
+ * Messenger destructor. 
  */
 Messenger::~Messenger() {
+    // free all the allocated socket state entries
+    for (auto it = _socketToState.begin(); it != _socketToState.end(); ++it) {
+        free(it->second);
+    }
 }
 
 
@@ -71,9 +70,6 @@ Messenger::~Messenger() {
  * Background thread routine to accept incoming connection requeuests.
  */
 void Messenger::listenerRoutine(int listenfd) {
-    //initialize members
-
-    // Start actual listener routine
     while(true) {
         int sockfd = accept(listenfd, nullptr, nullptr); 
         if (sockfd == -1) {
@@ -81,9 +77,8 @@ void Messenger::listenerRoutine(int listenfd) {
         }
 
         // create a new shared state variable for this socket 
-        if (_socketToState.count(sockfd)) {
-            free(_socketToState[sockfd]);
-        }
+        std::lock_guard<std::mutex> lock(_m);
+        assert(!_socketToState.count(sockfd)); // ensure earlier cleanup was atomic
         _socketToState[sockfd] = new SocketState{}; 
         _socketToState[sockfd]->timeCreated = steady_clock::now(); 
 
@@ -102,12 +97,9 @@ void Messenger::listenerRoutine(int listenfd) {
  * Receiver worker task. Continually reads messages and places them in the 
  * appropriate queue. 
  *
- * \param isRequestReceiver - determines whether to place messages into request
- *                            response queues.  
- *
- * Todo: try templatizing to allow the right type of blocking queue to be passed in
+ * @param shouldReadRequests true if requests should be parsed, false for responses. 
  */
-void Messenger::receiveMessagesTask(int sockfd, bool isRequestReceiver) {
+void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
     while(true) {
         // read the message length
         int msgLength;
@@ -121,41 +113,42 @@ void Messenger::receiveMessagesTask(int sockfd, bool isRequestReceiver) {
 
         // place the message in the appropriate queue
         std::string message(msgBuf, sizeof(msgBuf));
-        if (isRequestReceiver) {
+        if (shouldReadRequests) {
             Request request {message, sockfd, steady_clock::now()};
-            _requestQueue.blockingPush(request);
+            _requestQueue.notifyingPush(request);
         } else {
-            _responseQueue.blockingPush(message);
+            _responseQueue.notifyingPush(message);
         }
         cout << "Got a message of length " << msgLength << endl;
     }
 
-    // we only break out of the loop if there was an error
-    cout << "receiveMessagesTask: problem while reading message, aborting. " << endl;
+    // we broke from the loop due to an error. cleanup socket and exit. 
     std::lock_guard<std::mutex> lock(_m);
     if (_socketToState[sockfd]->oneExited) {
         close(sockfd);
         free(_socketToState[sockfd]);
-        _socketToState.erase(sockfd); // not necessary, but saves a bit of memory
-        cout << "receiver freed socket " << sockfd << endl;
+        _socketToState.erase(sockfd);
+        cout << "receiver: freed socket " << sockfd << endl;
     } else {
         _socketToState[sockfd]->oneExited = true;
-        cout << "receiver will let sender free socket " << sockfd << endl;
+        cout << "receiver: will let sender free socket " << sockfd << endl;
     }
 }
 
 
 /**
- * worker task: continually send messages when they're put in your queue. 
+ * Worker task for 'sender' threads in which the thread will perpetually wait 
+ * for messages to send to the given socket, exiting only once the socket dies.
  */
 void Messenger::sendMessagesTask(int sockfd) {
     // todo: these accesses are vulnerable to the overall map being reallocated, no? 
+    _m.lock();
     BlockingQueue<std::string>& outBoundMessages = _socketToState[sockfd]->outboundMessages;
-    std::string& hostAndPort = _socketToState[sockfd]->hostAndPort;
+    _m.unlock(); // todo: need this? John OH 
 
     while(true) {
         // wait for a message to be ready to be sent
-        std::string message = outBoundMessages.blockingPop();
+        std::string message = outBoundMessages.waitingPop();
 
         // send message length 
         int msgLength = message.length();
@@ -169,17 +162,21 @@ void Messenger::sendMessagesTask(int sockfd) {
         cout << "sender: sent a message with length " << message.length() << endl;
     }
 
-    // we broke from the loop due to an error. commence abort sequence. 
+    // we broke from the loop due to an error. cleanup socket and exit.
     std::lock_guard<std::mutex> lock(_m);
-    _hostAndPortToFd.erase(hostAndPort); // map can only contain live connections
+    // special case: sender erases the cached addr map entry over the receiver
+    // because the sender relies on caller to fill its queue to wakeup. thus, 
+    // erasing the map entry makes this impossible (for request senders).
+    // todo: eliminate this weirdness by fixing sender exits.  
+    _hostAndPortToFd.erase(_socketToState[sockfd]->hostAndPort);
     if (_socketToState[sockfd]->oneExited) {
         close(sockfd);
         free(_socketToState[sockfd]);
-        _socketToState.erase(sockfd); // not necessary, but saves a bit of memory
-        cout << "sender freed socket " << sockfd << endl;
+        _socketToState.erase(sockfd);
+        cout << "sender: freed socket " << sockfd << endl;
     } else {
         _socketToState[sockfd]->oneExited = true;
-        cout << "sender will let receiver free socket " << sockfd << endl;
+        cout << "sender: will let receiver free socket " << sockfd << endl;
     }
 }
 
@@ -187,17 +184,16 @@ void Messenger::sendMessagesTask(int sockfd) {
 /**
  * Send a message to the designated address. 
  * 
- * Returns true if the connection was healthy for the send, false if the 
- * connection cound't be made. This method does NOT return true if the message
- * was sent successfully - it instead operates on a best-effort basis. 
+ * Returns true if the message was sent via "best-effort", or false if there was
+ * an issue during connection.  
  * 
  * If there is not an existing connection to the peer, one will be made. 
- * If sending a message fails, the connection is scrapped and the socket is closed. 
+ * If sending a message fails, the connection socket is closed. 
  */
 bool Messenger::sendRequest(std::string hostAndPort, std::string message) { 
-    // make a connection if it's the first time sending to this address
     int sockfd;
     std::lock_guard<std::mutex> lock(_m);
+    // make a connection if it's the first time sending to this address
     if (!_hostAndPortToFd.count(hostAndPort)) {
         sockfd = establishConnection(hostAndPort);
         if (sockfd == -1) {
@@ -208,6 +204,7 @@ bool Messenger::sendRequest(std::string hostAndPort, std::string message) {
         _hostAndPortToFd[hostAndPort] = sockfd;
 
         // create shared state for this socket
+        assert(!_socketToState.count(sockfd)); // ensure proper earlier cleanup
         _socketToState[sockfd] = new SocketState{};
         _socketToState[sockfd]->hostAndPort = hostAndPort;
 
@@ -223,64 +220,67 @@ bool Messenger::sendRequest(std::string hostAndPort, std::string message) {
 
 
     // pass the message to the socket's desigated sender 
-    _socketToState[sockfd]->outboundMessages.blockingPush(message);
+    _socketToState[sockfd]->outboundMessages.notifyingPush(message);
     return true;
 }
 
-/** 
- * Return a message if one is available.
- */
-std::optional<Messenger::Request> Messenger::getNextRequest(int timeout) {
-    std::optional<Request> msgOpt = _requestQueue.blockingPop_timed(timeout);
-
-    if (msgOpt) {
-        return *msgOpt;
-    } else {
-        return std::nullopt;
-    }
-}
 
 /**
- * Send a response to a request you've already received. 
+ * Send a response to a peer who's request you've already received. 
  *
- * Return true if the message was sent "best-effort", or false if there was
- * an issue sending or the destination socket was closed in the interim. 
+ * Multiple responses can be sent using the same response token, as long as the
+ * associated connection hasn't been closed since receiving that response token.
+ * 
+ * Return true if the message was sent via "best-effort", or false if the 
+ * response token is no longer valid. 
  */
 bool Messenger::sendResponse(Request::ResponseToken responseToken, std::string message) {
-    // perform lookup w/ responseToken to see if the socket we received the message on is the same
+    std::lock_guard<std::mutex> lock(_m);
+    if (!_socketToState.count(responseToken.sockfd)) {
+        cout << "sendResponse: Invalid response token" << endl;
+        return false;
+    }
     if (_socketToState[responseToken.sockfd]->timeCreated > responseToken.timestamp) {
-        // the socket that we got the request on has been replaced! scrap the message
-        cout << "sendResponse: Can't respond to stale socket, aborting" << endl;
+        cout << "sendResponse: Stale response token" << endl;
         return false;
     }
 
     // pass the message to the socket's desigated sender 
-    _socketToState[responseToken.sockfd]->outboundMessages.blockingPush(message);
+    _socketToState[responseToken.sockfd]->outboundMessages.notifyingPush(message);
     return true;
 }
 
 
 /** 
- * Return a message if one is available.
+ * Return a request message if one becomes available in the specified duration, 
+ * in milliseconds. 
+ *
+ * A negative timeout indicates an indefinite timeout.
  */
-std::optional<std::string> Messenger::getNextResponse(int timeout) {
-    std::optional<std::string> msgOpt = _responseQueue.blockingPop_timed(timeout);
-    if (msgOpt) {
-        return *msgOpt;
-    } else {
-        return std::nullopt;
+std::optional<Messenger::Request> Messenger::getNextRequest(int timeoutDurationMs) {
+    if (timeoutDurationMs < 0) {
+        return _requestQueue.waitingPop();
     }
+    return _requestQueue.waitingPop_timed(timeoutDurationMs);
 }
 
-// todo: implement
-std::optional<std::string> Messenger::awaitResponseFrom(std::string hostAndPort, int timeout) {
-    cout << "awaitResponseFrom: not implemented yet" << endl;
-    return std::nullopt;
+
+/** 
+ * Return a response message if one becomes available in the specified duration, 
+ * in milliseconds. 
+ *
+ * A negative timeout indicates an indefinite timeout.
+ */
+std::optional<std::string> Messenger::getNextResponse(int timeoutDurationMs) {
+    if (timeoutDurationMs < 0) {
+        return _responseQueue.waitingPop();
+    }
+    return _responseQueue.waitingPop_timed(timeoutDurationMs);
 }
 
 
 /**
- * Create a listening socket on the designated port. 
+ * Create a listening socket on the designated port (in host-byte order). 
  *
  * Returns the created socket. 
  */
@@ -315,9 +315,13 @@ int createListeningSocket(int port) {
     return listenfd;
 }
 
-// temporary establish connection method, in terms of "IP:port"
-// IP should be in standard IPv4 dotted decimal notation, ex. "127.0.0.95"
-// example: "127.0.0.95:8000"
+/**
+ * Create a socket connection to the designated peer address. 
+ * The string is expected to look like "<IP>:<port>", where the port is in 
+ * IPv4 decimal notation. A valid example input is "127.0.0.95:8000". 
+ *
+ * Returns the socket fd on success, or -1 on failure. 
+ */
 int establishConnection(std::string hostAndPort) {
     // parse input string 
     int colonIdx = hostAndPort.find(":");
@@ -350,8 +354,8 @@ int establishConnection(std::string hostAndPort) {
 
 
 /** 
- * Send 'length' bytes from a socket. Returns the number of bytes
- * read, or -1 if there was an error.
+ * Write 'length' bytes to a socket. Returns the number of bytes
+ * written, or -1 if there was an error.
  */
 int sendEntireMessage(const int connfd, const void* buf, const int length) { 
     int bytesWritten = 0;
@@ -375,6 +379,7 @@ int sendEntireMessage(const int connfd, const void* buf, const int length) {
 int readEntireMessage(const int connfd, void* buf, int bytesToRead) {
     int bytesRead = 0;
     while (bytesRead < bytesToRead) {
+        // 'MSG_NOSIGNAL': disable sigpipe in case write fails
         int n = recv(connfd, (char *)buf + bytesRead, 
                      bytesToRead - bytesRead, MSG_NOSIGNAL);
         // orderly shutdown, or an error ocurred

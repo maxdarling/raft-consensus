@@ -62,7 +62,8 @@ void MessengerTester(int serverNumber) {
 
 
         // check for received messages
-        std::optional<Messenger::Request> requestOpt = messenger.getNextRequest();
+        int timeoutMs = 100;
+        std::optional<Messenger::Request> requestOpt = messenger.getNextRequest(timeoutMs);
         if (requestOpt) {
             cout << "Request received:" << endl;
             cout << (requestOpt->message) << endl; 
@@ -92,6 +93,7 @@ void clientServerTester(int serverNumber) {
                                 " from server #" + std::to_string(serverNumber) + "~~~~~~~\n\n";
 
             clientMessenger.sendRequest(peerHostAndPort, requestMessage);
+            clientMessenger.sendResponse({}, "fake baby"); // test invalid client operation
 
             // wait for a response
             std::optional<std::string> responseOpt = clientMessenger.getNextResponse(100); // for now, 100 does nothing. 
