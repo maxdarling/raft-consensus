@@ -33,47 +33,42 @@ class Messenger {
             } responseToken;
         };
         
-        bool sendRequest(std::string hostAndPort, std::string message); 
+        bool sendRequest(std::string peerAddr, std::string message); 
         bool sendResponse(Request::ResponseToken responseToken, std::string message);
 
         std::optional<Request> getNextRequest(int timeoutMs);
         std::optional<std::string> getNextResponse(int timeoutMs); 
 
-        std::optional<std::string> awaitResponseFrom(std::string hostAndPort, int timeout); // seems impossible to implement
-
     private:
-        /* background thread routine to manage incoming connections */
-        void listenerRoutine(int listenfd);
+        void listener(int listenfd);
 
-        //void receiveMessagesTask(int sockfd, BlockingQueue<std::string>* readyMessages); // todo: get this to work. thread errors. 
         void receiveMessagesTask(int sockfd, bool shouldReadRequests);
-
         void sendMessagesTask(int sockfd);
 
-        /* shared state between a socket's sender and the main dispatching thread */
+        /* shared state between a socket's worker threads and the main thread */
         struct SocketState {
+            /* messages to be sent on this socket */
             BlockingQueue<std::string> outboundMessages;
-            std::string hostAndPort; // only used for request senders to remove self from map.
 
-            // only used for response senders to check if sending is vaild 
+            /* time the socket was created. used to catch state responses */  
             std::chrono::time_point<steady_clock> timeCreated;
 
-            /* used to coordinate which of the reader / sender should close the socket, since 
-               it's only safe to close ths socket once both threads have exited, and won't be 
-               touching the socket anymore. 
-            */
+            /* binary "refcount" to coordinate worker cleanup efforts */
             bool oneExited = false;
+
+            /* key into '_peerAddrToSocket' to enable full cleanup */
+            std::string peerAddr;
         };
-        /* maps socket to the state shared between its sender and the main dispatching thread */
+        /* maps each socket to state shared with its worker threads */
         unordered_map<int, SocketState *> _socketToState;
 
-        /* maps addresses for healthy connections to the associated socket */
-        unordered_map<std::string, int> _hostAndPortToFd;
+        /* maps peer network addresses to their associated sockets */
+        unordered_map<std::string, int> _peerAddrToSocket;
 
-        /* store collected messages */
+        /* synchronize access to '_socketToState' and '_peerAddrToSocket' */  
+        std::mutex _m;
+
+        /* store request and response messages when received */
         BlockingQueue<Request> _requestQueue;
         BlockingQueue<std::string> _responseQueue; 
-
-        /* synchronize access to the maps above */  
-        std::mutex _m;
 };

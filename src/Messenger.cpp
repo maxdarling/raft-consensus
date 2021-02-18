@@ -20,7 +20,7 @@ using std::chrono::steady_clock;
 
 /* convenience methods */
 int createListeningSocket(int port);
-int establishConnection(std::string hostAndPort);
+int establishConnection(std::string peerAddr);
 int sendEntireMessage(const int connfd, const void* buf, const int length);
 int readEntireMessage(const int connfd, void* buf, int bytesToRead);
 
@@ -44,9 +44,8 @@ int readEntireMessage(const int connfd, void* buf, int bytesToRead);
 Messenger::Messenger(const int listenPort) {
     // start a background thread to listen for connections
     int listenfd = createListeningSocket(listenPort);
-    std::thread listener(&Messenger::listenerRoutine, this, listenfd);
+    std::thread listener(&Messenger::listener, this, listenfd);
     listener.detach();
-
 }
 
 /**
@@ -59,8 +58,17 @@ Messenger::Messenger() {
  * Messenger destructor. 
  */
 Messenger::~Messenger() {
-    // free all the allocated socket state entries
+    /* 
+        Shutdown procedure: 
+        -close all sockets
+        -free all allocated socket state
+        
+        todo: 
+        -signal listener thread to stop
+        -signal leftover worker threads to stop -> double free issue? hard?
+    */
     for (auto it = _socketToState.begin(); it != _socketToState.end(); ++it) {
+        close(it->first);
         free(it->second);
     }
 }
@@ -69,7 +77,7 @@ Messenger::~Messenger() {
 /**
  * Background thread routine to accept incoming connection requeuests.
  */
-void Messenger::listenerRoutine(int listenfd) {
+void Messenger::listener(int listenfd) {
     while(true) {
         int sockfd = accept(listenfd, nullptr, nullptr); 
         if (sockfd == -1) {
@@ -168,7 +176,7 @@ void Messenger::sendMessagesTask(int sockfd) {
     // because the sender relies on caller to fill its queue to wakeup. thus, 
     // erasing the map entry makes this impossible (for request senders).
     // todo: eliminate this weirdness by fixing sender exits.  
-    _hostAndPortToFd.erase(_socketToState[sockfd]->hostAndPort);
+    _peerAddrToSocket.erase(_socketToState[sockfd]->peerAddr);
     if (_socketToState[sockfd]->oneExited) {
         close(sockfd);
         free(_socketToState[sockfd]);
@@ -182,7 +190,10 @@ void Messenger::sendMessagesTask(int sockfd) {
 
 
 /**
- * Send a message to the designated address. 
+ * Send a request message to the designated address. 
+ * 
+ * 'peerAddr': "<a valid IPv4 dotted address>:<port>"
+ *                example: "127.0.0.95:8000" 
  * 
  * Returns true if the message was sent via "best-effort", or false if there was
  * an issue during connection.  
@@ -190,23 +201,23 @@ void Messenger::sendMessagesTask(int sockfd) {
  * If there is not an existing connection to the peer, one will be made. 
  * If sending a message fails, the connection socket is closed. 
  */
-bool Messenger::sendRequest(std::string hostAndPort, std::string message) { 
+bool Messenger::sendRequest(std::string peerAddr, std::string message) { 
     int sockfd;
     std::lock_guard<std::mutex> lock(_m);
     // make a connection if it's the first time sending to this address
-    if (!_hostAndPortToFd.count(hostAndPort)) {
-        sockfd = establishConnection(hostAndPort);
+    if (!_peerAddrToSocket.count(peerAddr)) {
+        sockfd = establishConnection(peerAddr);
         if (sockfd == -1) {
-            cout << "connection failed to " << hostAndPort << endl;
+            cout << "connection failed to " << peerAddr << endl;
             return false;
         }
-        cout << "connection established with " << hostAndPort << endl;
-        _hostAndPortToFd[hostAndPort] = sockfd;
+        cout << "connection established with " << peerAddr << endl;
+        _peerAddrToSocket[peerAddr] = sockfd;
 
         // create shared state for this socket
         assert(!_socketToState.count(sockfd)); // ensure proper earlier cleanup
         _socketToState[sockfd] = new SocketState{};
-        _socketToState[sockfd]->hostAndPort = hostAndPort;
+        _socketToState[sockfd]->peerAddr = peerAddr;
 
         // create a request sender for this socket's lifetime
         std::thread sender(&Messenger::sendMessagesTask, this, sockfd);
@@ -216,7 +227,7 @@ bool Messenger::sendRequest(std::string hostAndPort, std::string message) {
         std::thread reader(&Messenger::receiveMessagesTask, this, sockfd, false);
         reader.detach();
     }
-    sockfd = _hostAndPortToFd[hostAndPort];
+    sockfd = _peerAddrToSocket[peerAddr];
 
 
     // pass the message to the socket's desigated sender 
@@ -322,11 +333,11 @@ int createListeningSocket(int port) {
  *
  * Returns the socket fd on success, or -1 on failure. 
  */
-int establishConnection(std::string hostAndPort) {
+int establishConnection(std::string peerAddr) {
     // parse input string 
-    int colonIdx = hostAndPort.find(":");
-    std::string IPstr = hostAndPort.substr(0, colonIdx);
-    int port = std::stoi(hostAndPort.substr(colonIdx + 1));
+    int colonIdx = peerAddr.find(":");
+    std::string IPstr = peerAddr.substr(0, colonIdx);
+    int port = std::stoi(peerAddr.substr(colonIdx + 1));
 
     sockaddr_in serv_addr;
     memset(&serv_addr, '0', sizeof(serv_addr));
