@@ -28,8 +28,10 @@ class Messenger {
         struct Request {
             std::string message;
             struct ResponseToken {
-                int sockfd;
-                std::chrono::time_point<steady_clock> timestamp;
+                private:
+                    [[maybe_unused]] int sockfd;
+                    time_point<steady_clock> timestamp;
+                friend class Messenger; // poggers
             } responseToken;
         };
         

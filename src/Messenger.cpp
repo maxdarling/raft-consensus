@@ -124,8 +124,12 @@ void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
         if (shouldReadRequests) {
             Request request = {
                 message, 
-                Request::ResponseToken{sockfd, steady_clock::now()}
+                Request::ResponseToken(),
+                //Request::ResponseToken{sockfd, steady_clock::now()}
+                //Request::ResponseToken(sockfd, steady_clock::now())
             };
+            request.responseToken.sockfd = sockfd;
+            request.responseToken.timestamp = steady_clock::now();
             _requestQueue.notifyingPush(request);
         } else {
             _responseQueue.notifyingPush(message);
