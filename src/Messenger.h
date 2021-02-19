@@ -44,7 +44,7 @@ class Messenger {
         std::optional<std::string> getNextResponse(int timeoutMs); 
 
     private:
-        void listener(int listenfd);
+        void listener();
 
         void receiveMessagesTask(int sockfd, bool shouldReadRequests);
         void sendMessagesTask(int sockfd);
@@ -54,14 +54,19 @@ class Messenger {
             /* messages to be sent on this socket */
             BlockingQueue<std::string> outboundMessages;
 
-            /* time the socket was created. used to catch state responses */  
+            /* time the socket was created. used only on sockets 
+               that receive requests and send responses. */  
             std::chrono::time_point<steady_clock> timeCreated;
 
             /* binary "refcount" to coordinate worker cleanup efforts */
             bool oneExited = false;
 
-            /* key into '_peerAddrToSocket' to enable full cleanup */
+            /* key into '_peerAddrToSocket' to enable cleanup of that map. 
+               used only on sockets that send requests and receive responses. */
             std::string peerAddr;
+
+            /* flag to indicate the destructor closed the socket. */
+            bool destructorClosed = false;
         };
         /* maps each socket to state shared with its worker threads */
         unordered_map<int, SocketState *> _socketToState;
@@ -75,4 +80,7 @@ class Messenger {
         /* store request and response messages when received */
         BlockingQueue<Request> _requestQueue;
         BlockingQueue<std::string> _responseQueue; 
+
+        /* port to listen for requests on (client-only) */
+        std::optional<int> _listenSock;
 };

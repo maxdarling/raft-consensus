@@ -140,7 +140,10 @@ int main(int argc, char* argv[])
     int serverNumber = std::stoi(argv[1]);
     //MessengerTester(serverNumber);
     clientServerTester(serverNumber);
+    // {
+    //     Messenger m (5001);
+    // }
 
-    cout << "Program End" << endl;
+    sleep(2);
     return 0;
 }

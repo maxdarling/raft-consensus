@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/types.h> 
+#include <errno.h>
 
 /* general */
 #include <unistd.h>
@@ -43,8 +44,9 @@ int readEntireMessage(const int connfd, void* buf, int bytesToRead);
  */
 Messenger::Messenger(const int listenPort) {
     // start a background thread to listen for connections
-    int listenfd = createListeningSocket(listenPort);
-    std::thread listener(&Messenger::listener, this, listenfd);
+    _listenSock = createListeningSocket(listenPort);
+    cout << "listening socket is " << *_listenSock << endl;
+    std::thread listener(&Messenger::listener, this);
     listener.detach();
 }
 
@@ -58,18 +60,16 @@ Messenger::Messenger() {
  * Messenger destructor. 
  */
 Messenger::~Messenger() {
-    /* 
-        Shutdown procedure: 
-        -close all sockets
-        -free all allocated socket state
-        
-        todo: 
-        -signal listener thread to stop
-        -signal leftover worker threads to stop -> double free issue? hard?
-    */
+    // close listener so it can exit (only for server instances)
+    if (_listenSock) {
+        close(*_listenSock);
+    }
+    
+    // close all open sockets. each socket's workers awaken and finish cleanup.
+    std::lock_guard<std::mutex> lock(_m);
     for (auto it = _socketToState.begin(); it != _socketToState.end(); ++it) {
         close(it->first);
-        free(it->second);
+        it->second->destructorClosed = true;
     }
 }
 
@@ -77,12 +77,19 @@ Messenger::~Messenger() {
 /**
  * Background thread routine to accept incoming connection requeuests.
  */
-void Messenger::listener(int listenfd) {
+void Messenger::listener() {
     while(true) {
-        int sockfd = accept(listenfd, nullptr, nullptr); 
+        int sockfd = accept(*_listenSock, nullptr, nullptr); 
         if (sockfd == -1) {
-            perror("accept failed\n");
+            perror("listener(): 'accept()' failed\n");
+            if (errno == EBADF) {
+                cout << "listener(): socket was closed, exiting" << endl;
+                return;
+            }
+            cout << "listener(): non-fatal error, continuing" << endl;
+            continue;
         }
+        cout << "accepted connection on socket " << sockfd << endl;
 
         // create a new shared state variable for this socket 
         std::lock_guard<std::mutex> lock(_m);
@@ -132,13 +139,18 @@ void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
     // we broke from the loop due to an error. cleanup socket and exit. 
     std::lock_guard<std::mutex> lock(_m);
     if (_socketToState[sockfd]->oneExited) {
-        close(sockfd);
+        if (!_socketToState[sockfd]->destructorClosed){
+            close(sockfd); // if the destructor closed the socket, we don't. 
+        }
+        _peerAddrToSocket.erase(_socketToState[sockfd]->peerAddr);
         free(_socketToState[sockfd]);
         _socketToState.erase(sockfd);
-        cout << "receiver: freed socket " << sockfd << endl;
+        cout << "receiver: cleaned up socket " << sockfd << endl;
     } else {
         _socketToState[sockfd]->oneExited = true;
-        cout << "receiver: will let sender free socket " << sockfd << endl;
+        /* wakeup the sender */
+        _socketToState[sockfd]->outboundMessages.notifyingPush("");
+        cout << "receiver: will let sender cleanup socket " << sockfd << endl;
     }
 }
 
@@ -148,40 +160,49 @@ void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
  * for messages to send to the given socket, exiting only once the socket dies.
  */
 void Messenger::sendMessagesTask(int sockfd) {
-    // todo: these accesses are vulnerable to the overall map being reallocated, no? 
     _m.lock();
     BlockingQueue<std::string>& outBoundMessages = _socketToState[sockfd]->outboundMessages;
-    _m.unlock(); // todo: need this? John OH 
+    _m.unlock(); // todo: need this? is it sufficient? ask in OH
 
     while(true) {
-        // wait for a message to be ready to be sent
         std::string message = outBoundMessages.waitingPop();
+
+        /* check if we were signaled by the receiver for this socket about a
+           socket issue while we were waiting for a message to send */
+        {
+            std::lock_guard<std::mutex> lock(_m);
+            if (_socketToState[sockfd]->oneExited) {
+                break;
+            }
+        }
 
         // send message length 
         int msgLength = message.length();
         int n = sendEntireMessage(sockfd, &msgLength, sizeof(msgLength));
-        if (n != sizeof(msgLength)) break;
+        if (n != sizeof(msgLength)) {
+            break;
+        }
 
         // send message body
         n = sendEntireMessage(sockfd, message.c_str(), message.length());
-        if (n != message.length()) break;
+        if (n != message.length()) {
+            break;
+        }
     }
 
     // we broke from the loop due to an error. cleanup socket and exit.
     std::lock_guard<std::mutex> lock(_m);
-    // special case: sender erases the cached addr map entry over the receiver
-    // because the sender relies on caller to fill its queue to wakeup. thus, 
-    // erasing the map entry makes this impossible (for request senders).
-    // todo: eliminate this weirdness by fixing sender exits.  
-    _peerAddrToSocket.erase(_socketToState[sockfd]->peerAddr);
     if (_socketToState[sockfd]->oneExited) {
-        close(sockfd);
+        if (!_socketToState[sockfd]->destructorClosed){
+            close(sockfd); // if the destructor closed the socket, we don't. 
+        }
+        _peerAddrToSocket.erase(_socketToState[sockfd]->peerAddr);
         free(_socketToState[sockfd]);
         _socketToState.erase(sockfd);
-        cout << "sender: freed socket " << sockfd << endl;
+        cout << "sender: cleaned up socket " << sockfd << endl;
     } else {
         _socketToState[sockfd]->oneExited = true;
-        cout << "sender: will let receiver free socket " << sockfd << endl;
+        cout << "sender: will let receiver cleanup socket " << sockfd << endl;
     }
 }
 
