@@ -68,7 +68,8 @@ void MessengerTester(int serverNumber) {
             // try to send a response, too!
             std::string responseMsg = "\n\n~~~~~~Response #" + std::to_string(++n_responses_sent) + 
                                 " from server #" + std::to_string(serverNumber) + "~~~~~~~\n\n";
-            messenger.sendResponse(requestOpt->responseToken, responseMsg);
+            //messenger.sendResponse(requestOpt->responseToken, responseMsg);
+            requestOpt->sendResponse(responseMsg);
         } else {
             cout << "No request message received in time" << endl;
         }
@@ -91,7 +92,7 @@ void clientServerTester(int serverNumber) {
                                 " from server #" + std::to_string(serverNumber) + "~~~~~~~\n\n";
 
             clientMessenger.sendRequest(peerHostAndPort, requestMessage);
-            clientMessenger.sendResponse({}, "fake baby"); // test invalid client operation
+            //clientMessenger.sendResponse({}, "fake baby"); // test invalid client operation
 
             // wait for a response
             std::optional<std::string> responseOpt = clientMessenger.getNextResponse(100); // for now, 100 does nothing. 
@@ -121,7 +122,8 @@ void clientServerTester(int serverNumber) {
                 //send a response  
                 std::string responseMsg = "\n\n~~~~~~Response #" + std::to_string(++n_responses_sent) + 
                                     " from server #" + std::to_string(serverNumber) + "~~~~~~~\n\n";
-                serverMessenger.sendResponse(requestOpt->responseToken, responseMsg);
+                //serverMessenger.sendResponse(requestOpt->responseToken, responseMsg);
+                requestOpt->sendResponse(responseMsg); // clean!?!?
 
             } else {
                 cout << "No request message arrived in time" << endl;

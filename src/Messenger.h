@@ -23,21 +23,23 @@ class Messenger {
         Messenger();                 // client instance
         ~Messenger();
 
-        /* the type for a recieved request, containing the message itself and 
-           a 'ResponseToken' to be used when responding to the request. */
+        /* the type for a recieved request, containing the request message
+           itself and a means to respond with 'sendResponse()' */
         struct Request {
             std::string message;
-            struct ResponseToken {
-                private:
-                    [[maybe_unused]] int sockfd;
-                    time_point<steady_clock> timestamp;
-                friend class Messenger; // poggers
-            } responseToken;
+            bool sendResponse(std::string responseMessage);
+
+            private:
+                Request(std::string m, int sock, time_point<steady_clock> ts, 
+                        Messenger& mp) : message(m), _sockfd(sock), 
+                        _timestamp(ts), _messengerParent(mp) {};
+                int _sockfd;
+                time_point<steady_clock> _timestamp;
+                Messenger& _messengerParent;
+            friend class Messenger;
         };
         
         bool sendRequest(std::string peerAddr, std::string message); 
-        bool sendResponse(Request::ResponseToken responseToken, std::string message);
-
         std::optional<Request> getNextRequest(int timeoutMs);
         std::optional<std::string> getNextResponse(int timeoutMs); 
 

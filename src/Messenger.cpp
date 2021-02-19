@@ -121,15 +121,8 @@ void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
 
         // place the message in the appropriate queue
         std::string message(msgBuf, sizeof(msgBuf));
-        if (shouldReadRequests) {
-            Request request = {
-                message, 
-                Request::ResponseToken(),
-                //Request::ResponseToken{sockfd, steady_clock::now()}
-                //Request::ResponseToken(sockfd, steady_clock::now())
-            };
-            request.responseToken.sockfd = sockfd;
-            request.responseToken.timestamp = steady_clock::now();
+        if (shouldReadRequests) { 
+            Request request(message, sockfd, steady_clock::now(), *this);
             _requestQueue.notifyingPush(request);
         } else {
             _responseQueue.notifyingPush(message);
@@ -241,27 +234,25 @@ bool Messenger::sendRequest(std::string peerAddr, std::string message) {
 
 
 /**
- * Send a response to a peer who's request you've already received. 
+ * Send a response to the peer who's request you've received. 
  *
- * Multiple responses can be sent using the same response token, as long as the
- * associated connection hasn't been closed since receiving that response token.
+ * Multiple responses can be sent using the same request object, as long as the
+ * network connection hasn't been closed since the time of request receipt.
  * 
  * Return true if the message was sent via "best-effort", or false if the 
- * response token is no longer valid. 
+ * network connection was closed. 
  */
-bool Messenger::sendResponse(Request::ResponseToken responseToken, std::string message) {
-    std::lock_guard<std::mutex> lock(_m);
-    if (!_socketToState.count(responseToken.sockfd)) {
-        cout << "sendResponse: Invalid response token" << endl;
-        return false;
-    }
-    if (_socketToState[responseToken.sockfd]->timeCreated > responseToken.timestamp) {
-        cout << "sendResponse: Stale response token" << endl;
+bool Messenger::Request::sendResponse(std::string message) {
+    std::lock_guard<std::mutex> lock(_messengerParent._m);
+    if (_messengerParent._socketToState[_sockfd]->timeCreated > _timestamp) {
+        cout << "sendResponse: can't respond, connection to"
+                "requester was closed" << endl;
         return false;
     }
 
     // pass the message to the socket's desigated sender 
-    _socketToState[responseToken.sockfd]->outboundMessages.notifyingPush(message);
+    _messengerParent.
+        _socketToState[_sockfd]->outboundMessages.notifyingPush(message);
     return true;
 }
 
