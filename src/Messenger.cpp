@@ -33,6 +33,25 @@ int readEntireMessage(const int connfd, void* buf, int bytesToRead);
  * with 4 bytes - denoting message length - and follows with the message
  * itself.
  *
+ * 
+ * Race condition:
+ * currently, there's a race when the destructor calls 'close()' on open
+ * sockets. if a worker is about to call send/receive, then the destructor
+ * calls close, then another program opens a file with the same fd, then the
+ * workers will be reading/writing the wrong fd.
+ * 
+ * during program execution when a connection is closed, the workers both
+ * detect that on their own by returning from send/receive, and the last of the
+ * two workers to exit call 'close()', which prevents this issue.
+ *
+ * However, the destructor must call 'close()' as it is the only means of
+ * waking up the workers from their blocking send/receive calls. However, once
+ * this happens, the workers cannot validate that their socket is valid before
+ * calling send/receive. If the worker could atomically check its fd and call
+ * send/receive, then it'd be fine, but we'd need the worker to aquire a lock
+ * and then release it once it calls send/receive (just like cv.wait
+ * semantics), but that's impossible.
+ *
  * ~~~~~~ Design Notes ~~~~~~
  */ 
 
