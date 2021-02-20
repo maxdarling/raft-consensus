@@ -40,8 +40,8 @@ class Messenger {
         };
         
         bool sendRequest(std::string peerAddr, std::string message); 
-        std::optional<Request> getNextRequest(int timeoutMs);
-        std::optional<std::string> getNextResponse(int timeoutMs); 
+        std::optional<Request> getNextRequest(int timeoutMs = -1);
+        std::optional<std::string> getNextResponse(int timeoutMs = -1); 
 
     private:
         void listener();
