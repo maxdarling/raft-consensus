@@ -18,23 +18,22 @@ class Server {
     void run();
 
   private:
-    /* To track our most recent leader election vote. */
-    struct Vote {
-      int term_voted;
-      int voted_for;
-    };
-
     enum ServerState {
       FOLLOWER,
       CANDIDATE,
       LEADER
     };
 
+    /* To track most recent leader election vote. */
+    struct Vote {
+      int term_voted;
+      int voted_for;
+    };
     std::mutex m;
 
     /* PERSISTENT STATE */
     int current_term {0};
-    std::optional<Vote> _vote;
+    std::optional<Vote> vote;
 
     /* VOLATILE STATE ON ALL SERVERS */
     int _commit_index {0};
@@ -45,33 +44,36 @@ class Server {
     std::vector<int> _match_index;
 
     /* ADDITIONAL STATE */
-    // int _server_id;
     int server_no;
-    // bool _leader {false};
     ServerState server_state {FOLLOWER};
+    std::set<int> votes_received;
 
-    int _last_observed_leader_id {1};
+    int last_observed_leader_no {1};
     std::string _recovery_fname;      // name of instance's state recovery file
-    unordered_map<int, std::string> cluster_addrs; // map each node ID to its net address
+    unordered_map<int, std::string> server_addrs; // map each node ID to its net address
 
     /* UTIL */
     Messenger messenger;
     TimedCallback election_timer;
-    /*
-    Timer _election_timer;
-    Timer _heartbeat_timer;
-    */
+    TimedCallback heartbeat_timer;
+
     void request_listener();
     void response_listener();
-    void timeout_listener();
 
-    void request_handler(const Messenger::Request &req);
+    void request_handler(Messenger::Request &req);
+    void response_handler(const RAFTmessage &msg);
 
-    void handler_AppendEntries(const AppendEntries &ae);
-    void handler_RequestVote(const RequestVote &rv);
-    void handler_ClientRequest(const ClientRequest &cr);
+    void handler_AppendEntries(Messenger::Request &req, 
+        const AppendEntries &ae);
+    void handler_AppendEntries_response(const AppendEntries &ae);
+    void handler_RequestVote(Messenger::Request &req, 
+        const RequestVote &rv);
+    void handler_RequestVote_response(const RequestVote &rv);
+    void handler_ClientRequest(Messenger::Request &req, 
+        const ClientRequest &cr);
 
     void start_election();
+    void send_heartbeats();
 
     void process_command_routine(std::string command, std::string clientHostAndPort);
     void leader_tasks();
@@ -83,4 +85,5 @@ class Server {
     void send_RPC(RPC rpc, int _server_id);
     std::optional<RPC> receive_RPC();
     */
+   void broadcast_msg(const RAFTmessage &msg);
 };

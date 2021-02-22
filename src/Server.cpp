@@ -6,21 +6,22 @@
 /* In milliseconds */
 const int ELECTION_TIMEOUT_LOWER_BOUND = 5000;
 const int ELECTION_TIMEOUT_UPPER_BOUND = 10000;
-// const int HEARTBEAT_TIMEOUT = 2500;
+const int HEARTBEAT_TIMEOUT = 2000;
 
 /* V2
  * Construct server
  */
 Server::Server(const int _server_no, const std::string cluster_file)
   : server_no(_server_no),
-    cluster_addrs(parseClusterInfo(cluster_file)),
+    server_addrs(parseClusterInfo(cluster_file)),
     // TODO(ali): tell max to accept "addr:port" string in messenger constructor API
-    messenger(std::stoi(cluster_addrs[server_no].substr(cluster_addrs[server_no].find(":") + 1))),
+    messenger(std::stoi(server_addrs[server_no].substr(server_addrs[server_no].find(":") + 1))),
     election_timer(ELECTION_TIMEOUT_LOWER_BOUND, ELECTION_TIMEOUT_UPPER_BOUND, 
-                   std::bind(&Server::start_election, this))
+                   std::bind(&Server::start_election, this)),
+    heartbeat_timer(HEARTBEAT_TIMEOUT, std::bind(&Server::send_heartbeats, this))
 {
     // TODO(ali): error checking here
-    cluster_addrs = parseClusterInfo(cluster_file);
+    server_addrs = parseClusterInfo(cluster_file);
 } 
 
 /** V1
@@ -61,10 +62,10 @@ Server::Server(const int server_id,
  */
 void Server::run()
 {
-    LOG_F(INFO, "S%d now running @ %s", server_no, cluster_addrs[server_no].c_str());
+    LOG_F(INFO, "S%d now running @ %s", server_no, server_addrs[server_no].c_str());
+    election_timer.start();
 
     // TODO(ali): better way of doing this? at least reorder
-    std::thread(&Server::timeout_listener,  this).detach();
     std::thread(&Server::response_listener, this).detach();
     std::thread(&Server::request_listener,  this).join();
 }
@@ -102,7 +103,7 @@ void Server::request_listener()
 /* V2
  * dispatch RPC message to correct handler
  */
-void Server::request_handler(const Messenger::Request &req)
+void Server::request_handler(Messenger::Request &req)
 {
     RAFTmessage msg;
     msg.ParseFromString(req.message);
@@ -112,23 +113,56 @@ void Server::request_handler(const Messenger::Request &req)
         if (msg.term() > current_term) {
             current_term = msg.term();
             server_state = FOLLOWER;
+            //
         }
+        if (msg.term() == current_term) election_timer.start();
     }
 
     if (msg.has_requestvote_message()) {
-        handler_RequestVote(msg.requestvote_message());
+        handler_RequestVote(req, msg.requestvote_message());
     } 
     else if (msg.has_appendentries_message()) {
-        handler_AppendEntries(msg.appendentries_message());
+        handler_AppendEntries(req, msg.appendentries_message());
     } 
     else if (msg.has_clientrequest_message()) {
-        handler_ClientRequest(msg.clientrequest_message());
+        handler_ClientRequest(req, msg.clientrequest_message());
     }
 }
 
 void Server::response_listener()
 {
     loguru::set_thread_name("response listener");
+
+    for (;;) {
+        std::optional<std::string> res_opt = messenger.getNextResponse();
+        if (res_opt) {
+            RAFTmessage msg;
+            msg.ParseFromString(*res_opt);
+            response_handler(msg);
+        }
+    }
+}
+
+/* V2
+ * dispatch RPC message to correct handler
+ */
+void Server::response_handler(const RAFTmessage &msg)
+{
+    {
+        std::lock_guard<std::mutex> lock(m);
+        if (msg.term() > current_term) {
+            current_term = msg.term();
+            server_state = FOLLOWER;
+        }
+        if (msg.term() == current_term) election_timer.start();
+    }
+
+    if (msg.has_requestvote_message()) {
+        handler_RequestVote_response(msg.requestvote_message());
+    } 
+    else if (msg.has_appendentries_message()) {
+        handler_AppendEntries_response(msg.appendentries_message());
+    }
 }
 
 /** V1
@@ -199,9 +233,26 @@ void Server::leader_tasks() {
 /* v2
  * Process and reply to AppendEntries RPCs from leader.
  */
-void Server::handler_AppendEntries(const AppendEntries &ae)
+void Server::handler_AppendEntries(Messenger::Request &req, 
+    const AppendEntries &ae)
 {
     LOG_F(INFO, "S%d received AE req from S%d", server_no, ae.leader_no());
+
+    // CASE: reject stale request
+    if (ae.term() < current_term) {
+        RAFTmessage response;
+        AppendEntries *ae_response = new AppendEntries();
+        ae_response->set_term(current_term);
+        response.set_allocated_appendentries_message(ae_response);
+        req.sendResponse(response.SerializeAsString());
+    }
+
+    last_observed_leader_no = ae.leader_no();
+}
+
+void Server::handler_AppendEntries_response(const AppendEntries &ae)
+{
+    LOG_F(INFO, "S%d received AE res from S%d", server_no, ae.follower_no());
 }
 
 /** v1
@@ -227,9 +278,35 @@ void Server::handler_AppendEntries(const AppendEntries &ae) {
 /* v2
  * Process and respond to RequestVote RPCs from candidates.
  */
-void Server::handler_RequestVote(const RequestVote &rv)
+void Server::handler_RequestVote(Messenger::Request &req, const RequestVote &rv)
 {
     LOG_F(INFO, "S%d received RV req from S%d", server_no, rv.candidate_no());
+
+    RAFTmessage response;
+    RequestVote *rv_response = new RequestVote();
+    rv_response->set_term(current_term);
+    rv_response->set_vote_granted(false);
+    if (!vote || vote->term_voted < current_term
+              || vote->voted_for == rv.candidate_no()) {
+        if (rv.term() >= current_term) {
+            rv_response->set_vote_granted(true);
+            vote = {current_term, rv.candidate_no()};
+        }
+    }
+    response.set_allocated_requestvote_message(rv_response);
+    req.sendResponse(response.SerializeAsString());
+}
+
+void Server::handler_RequestVote_response(const RequestVote &rv)
+{
+    if (server_state != CANDIDATE) return;
+    if (rv.vote_granted()) votes_received.insert(rv.voter_no());
+    // CASE: election won
+    if (votes_received.size() > server_addrs.size() / 2) {
+        server_state = LEADER;
+        last_observed_leader_no = server_no;
+        heartbeat_timer.start();
+    }
 }
 
 /** v1
@@ -260,7 +337,7 @@ void Server::handler_RequestVote(const RequestVote &rv) {
 /* v2
  * process client request
  */
-void Server::handler_ClientRequest(const ClientRequest &cr)
+void Server::handler_ClientRequest(Messenger::Request &req, const ClientRequest &cr)
 {
     LOG_F(INFO, "S%d received CR: %s", server_no, cr.command().c_str());
 }
@@ -331,6 +408,18 @@ void Server::process_command_routine(std::string cmd, sockaddr_in client_addr) {
 void Server::start_election()
 {
     LOG_F(INFO, "S%d starting election", server_no);
+
+    server_state = CANDIDATE;
+    ++current_term;
+    votes_received = { server_no }; // vote for self
+    election_timer.start();
+
+    RAFTmessage msg;
+    RequestVote *rv = new RequestVote();
+    rv->set_term(current_term);
+    rv->set_candidate_no(server_no);
+    msg.set_allocated_requestvote_message(rv);
+    broadcast_msg(msg);
 }
 
 /** v1
@@ -389,9 +478,19 @@ bool Server::try_election() {
 }
 */
 
-void Server::timeout_listener()
+/* 
+ * send heartbeats
+ */
+void Server::send_heartbeats()
 {
-    loguru::set_thread_name("timeout listener");
+    if (server_state != LEADER) return;
+    heartbeat_timer.start();
+    RAFTmessage heartbeat_msg;
+    AppendEntries *ae_heartbeat = new AppendEntries();
+    ae_heartbeat->set_leader_no(server_no);
+    ae_heartbeat->set_term(current_term);
+    heartbeat_msg.set_allocated_appendentries_message(ae_heartbeat);
+    broadcast_msg(heartbeat_msg);
 }
 
 /**
@@ -401,7 +500,19 @@ void Server::timeout_listener()
 void Server::apply_log_entries() {}
 */
 
-/**
+/* v2
+ * broadcast
+ */
+void Server::broadcast_msg(const RAFTmessage &msg)
+{
+    std::string msg_str = msg.SerializeAsString();
+    for (auto const &[peer_no, peer_addr] : server_addrs) {
+        if (peer_no == server_no) continue;
+        messenger.sendRequest(peer_addr, msg_str);
+    }
+}
+
+/** v1
  * Send RPC to all other servers in the cluster.
  */
 /*
@@ -413,7 +524,7 @@ void Server::send_RPC(const RPC &rpc) {
 }
 */
 
-/**
+/** v1
  * Send RPC to a specific server in the cluster.
  */
 /*

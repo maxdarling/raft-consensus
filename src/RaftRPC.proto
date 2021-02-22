@@ -2,31 +2,36 @@
 syntax = "proto3";
 
 message AppendEntries {
-    bool is_request = 1;
+    /* SHARED FIELD */
+    int32 term = 1;
 
-    // Request fields
-    int32 term = 2;
-    int32 leader_no = 3;
+    /* REQUEST FIELD */
+    int32 leader_no = 2;
+
+    /* RESPONSE FIELDS */
+    int32 follower_no = 3;
+    bool success = 4;
+    int32 index_last_commit = 5;
 }
 
 message RequestVote {
-    bool is_request = 1;
+    /* SHARED FIELD */
+    int32 term = 1;
 
-    // Request fields
-    int32 term = 2;
-    int32 candidate_no = 3;
+    /* REQUEST FIELD */
+    int32 candidate_no = 2;
 
-    // Response fields
+    /* RESPONSE FIELDS */
+    int32 voter_no = 3;
     bool vote_granted = 4;
 }
 
 message ClientRequest {
-    // Request fields (client)
     string command = 1;
     string client_HostAndPort = 2; // so server knows who to repond to. 
                                   // will be removed after socket architecture change
 
-    // Response fields (server)
+    /* RESPONSE FIELDS */
     bool success = 4;
     int32 leader_id = 5;
     string output = 6;
