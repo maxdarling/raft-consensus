@@ -3,6 +3,8 @@
 
 int main(int argc, char* argv[]) {
     GOOGLE_PROTOBUF_VERIFY_VERSION;
+    loguru::init(argc, argv);
+    loguru::add_file("server.log", loguru::Truncate, loguru::Verbosity_MAX);
 
     if (argc < 2) {
         std::cerr << "Please specify the server number of this instance (i.e. "
@@ -30,8 +32,8 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    std::cout << "SERVER #" << serverNumber << " NOW RUNNING\n";
-    Server s(serverNumber, clusterInfo);
+    // std::cout << "SERVER #" << serverNumber << " NOW RUNNING\n";
+    Server s(serverNumber, DEFAULT_SERVER_FILE_PATH);
     s.run();
 
     return 0;

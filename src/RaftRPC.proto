@@ -6,7 +6,7 @@ message AppendEntries {
 
     // Request fields
     int32 term = 2;
-    int32 leader_id = 3;
+    int32 leader_no = 3;
 }
 
 message RequestVote {
@@ -14,7 +14,7 @@ message RequestVote {
 
     // Request fields
     int32 term = 2;
-    int32 candidate_id = 3;
+    int32 candidate_no = 3;
 
     // Response fields
     bool vote_granted = 4;
@@ -32,11 +32,12 @@ message ClientRequest {
     string output = 6;
 }
 
-message RPC {
+message RAFTmessage {
+    int32 term = 1;
     // Message instances
-    AppendEntries AppendEntries_message = 1;
-    RequestVote RequestVote_message = 2;
-    ClientRequest ClientRequest_message = 3;
+    AppendEntries AppendEntries_message = 2;
+    RequestVote RequestVote_message = 3;
+    ClientRequest ClientRequest_message = 4;
 }
 
 // For servers writing their persistent state variables to disk.

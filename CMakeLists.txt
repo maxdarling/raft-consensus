@@ -21,14 +21,18 @@ protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS src/RaftRPC.proto)
 set(SERVER_SRCS
   src/Server.cpp
   src/Messenger.cpp
+  src/TimedCallback.cpp
   src/util.cpp
+  src/loguru/loguru.cpp
   ${PROTO_SRCS})
 
 set(SERVER_HDRS
   src/Server.h
   src/Messenger.h
+  src/TimedCallback.h
   src/util.h
   src/BlockingQueue.h
+  src/loguru/loguru.hpp
   ${PROTO_HDRS})
 
 set(CLIENT_SRCS
@@ -54,8 +58,8 @@ set(TEST_HDRS
   ${PROTO_HDRS})
 
 # add the executables
-#add_executable(raft_server src/server-main.cpp ${SERVER_SRCS} ${SERVER_HDRS})
-#target_link_libraries(raft_server ${Protobuf_LIBRARIES})
+add_executable(raft_server src/server-main.cpp ${SERVER_SRCS} ${SERVER_HDRS})
+target_link_libraries(raft_server ${Protobuf_LIBRARIES})
 
 #add_executable(raft_client src/client-main.cpp ${CLIENT_SRCS} ${CLIENT_HDRS})
 #target_link_libraries(raft_client ${Protobuf_LIBRARIES})
@@ -64,6 +68,6 @@ add_executable(test_driver src/TestDriver.cpp ${TEST_SRCS} ${TEST_HDRS})
 target_link_libraries(test_driver ${Protobuf_LIBRARIES})
 
 # so we can include generated protobuf headers
-#target_include_directories(raft_server PUBLIC build)
+target_include_directories(raft_server PUBLIC build)
 #target_include_directories(raft_client PUBLIC build)
 target_include_directories(test_driver PUBLIC build)
