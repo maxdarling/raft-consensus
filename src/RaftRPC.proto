@@ -38,11 +38,13 @@ message RequestVote {
 message ClientRequest {
     /* REQUEST FIELD */
     string command = 1;
+    bool echo_request = 2;
 
     /* RESPONSE FIELDS */
-    bool success = 2;
-    int32 leader_no = 3;
-    string output = 4;
+    bool success = 3;
+    int32 leader_no = 4;
+    string output = 5;
+    bool echo = 6;
 }
 
 message RAFTmessage {

@@ -42,6 +42,7 @@ void Server::request_listener()
 
     for (;;) {
         std::optional<Messenger::Request> req_opt = messenger.getNextRequest();
+        LOG_F(INFO, "ACK!");
         if (req_opt) request_handler(*req_opt);
     }
 }
@@ -257,16 +258,24 @@ void Server::handler_RequestVote_response(const RequestVote &rv)
  */
 void Server::handler_ClientRequest(Messenger::Request &req, const ClientRequest &cr)
 {
+    RAFTmessage response;
+    ClientRequest *cr_response = new ClientRequest();
+    response.set_allocated_clientrequest_message(cr_response);
+
     std::lock_guard<std::mutex> lock(m);
     if (server_state != LEADER) {
         LOG_F(INFO, "S%d re-routing CR to S%d", 
             server_no, last_observed_leader_no);
-        RAFTmessage msg;
-        ClientRequest *cr_response = new ClientRequest();
         cr_response->set_success(false);
         cr_response->set_leader_no(last_observed_leader_no);
-        msg.set_allocated_clientrequest_message(cr_response);
-        req.sendResponse(msg.SerializeAsString());
+        req.sendResponse(response.SerializeAsString());
+        return;
+    }
+
+    if (cr.echo_request()) {
+        LOG_F(INFO, "S%d sending echo to client", server_no);
+        cr_response->set_echo(true);
+        req.sendResponse(response.SerializeAsString());
         return;
     }
 
@@ -391,7 +400,6 @@ void Server::start_election()
  */
 void Server::send_heartbeats()
 {
-    LOG_F(INFO, "S%d sending heartbeats", server_no);
     if (server_state != LEADER) return;
     heartbeat_timer.start();
     RAFTmessage heartbeat_msg;

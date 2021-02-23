@@ -39,6 +39,7 @@ set(CLIENT_SRCS
   src/Client.cpp
   src/Messenger.cpp
   src/util.cpp
+  src/loguru/loguru.cpp
   ${PROTO_SRCS})
 
 set(CLIENT_HDRS
@@ -46,6 +47,7 @@ set(CLIENT_HDRS
   src/Messenger.h
   src/util.h
   src/BlockingQueue.h
+  src/loguru/loguru.hpp
   ${PROTO_HDRS})
 
 set(TEST_SRCS
