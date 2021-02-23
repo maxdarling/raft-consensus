@@ -13,10 +13,9 @@ const int HEARTBEAT_TIMEOUT = 2000;
  */
 Server::Server(const int _server_no, const std::string cluster_file)
   : server_no(_server_no),
-    // TODO(ali): error checking on this?
+    // TODO(ali): additional error checking on these?
     server_addrs(parseClusterInfo(cluster_file)),
-    // TODO(ali): tell max to accept "addr:port" string in messenger constructor API
-    messenger(std::stoi(server_addrs[server_no].substr(server_addrs[server_no].find(":") + 1))),
+    messenger(parsePort(server_addrs[server_no])),
     election_timer(ELECTION_TIMEOUT_LOWER_BOUND, ELECTION_TIMEOUT_UPPER_BOUND, 
                    std::bind(&Server::start_election, this)),
     heartbeat_timer(HEARTBEAT_TIMEOUT, std::bind(&Server::send_heartbeats, this)) {}
@@ -114,7 +113,7 @@ void Server::response_handler(const RAFTmessage &msg)
 void Server::handler_AppendEntries(Messenger::Request &req, 
     const AppendEntries &ae)
 {
-    LOG_F(INFO, "S%d received AE req from S%d", server_no, ae.leader_no());
+    // LOG_F(INFO, "S%d received AE req from S%d", server_no, ae.leader_no());
 
     RAFTmessage response;
     AppendEntries *ae_response = new AppendEntries();
@@ -126,6 +125,7 @@ void Server::handler_AppendEntries(Messenger::Request &req,
 
     // CASE: reject stale request
     if (ae.term() < current_term) {    
+        LOG_F(INFO, "S%d rejects stale AE from S%d", server_no, ae.leader_no());
         ae_response->set_success(false);
         req.sendResponse(response.SerializeAsString());
         return;
@@ -139,7 +139,12 @@ void Server::handler_AppendEntries(Messenger::Request &req,
     last_observed_leader_no = ae.leader_no();
     election_timer.start();
 
+    // CASE: heartbeat received, no log entries to process
+    if (ae.log_entries_size() == 0) return;
+
     if (log[ae.prev_log_idx()].term != ae.prev_log_term()) {
+        LOG_F(INFO, "S%d prev log entry doesn't match AE req from S%d", 
+            server_no, ae.leader_no());
         ae_response->set_success(false);
         req.sendResponse(response.SerializeAsString());
         return;
@@ -153,11 +158,23 @@ void Server::handler_AppendEntries(Messenger::Request &req,
         // CASE: an entry at this index already exists in log
         if (new_entry_idx < log.size()) {
             if (log[new_entry_idx].term != new_entry.term) {
+                LOG_F(INFO, "S%d received conflicting log entry: "
+                            "\"%s\" replaced with \"%s\"", 
+                    server_no, 
+                    log[new_entry_idx].command.c_str(), 
+                    new_entry.command.c_str()
+                );
+
                 log.resize(new_entry_idx);
             }
-            else continue;
+            else {
+                LOG_F(INFO, "S%d received entry it already has from S%d",
+                    server_no, ae.leader_no());
+                continue;
+            }
         }
 
+        LOG_F(INFO, "S%d replicating %s", server_no, new_entry.command.c_str());
         log.push_back(new_entry);
     }
 
@@ -165,15 +182,23 @@ void Server::handler_AppendEntries(Messenger::Request &req,
         commit_index = MIN(ae.leader_commit(), new_entry_idx - 1);
     }
 
-    ae_response->set_follower_commit(commit_index);
+    ae_response->set_follower_next_idx(new_entry_idx);
     ae_response->set_success(true);
     req.sendResponse(response.SerializeAsString());
 }
 
 void Server::handler_AppendEntries_response(const AppendEntries &ae)
 {
-    LOG_F(INFO, "S%d received AE res from S%d", server_no, ae.follower_no());
-
+    std::lock_guard<std::mutex> lock(m);
+    if (server_state != LEADER) return;
+    if (ae.success()) {
+        next_index[ae.follower_no() - 1] = ae.follower_next_idx();
+        match_index[ae.follower_no() - 1] = ae.follower_next_idx() - 1;
+    }
+    else {
+        next_index[ae.follower_no() - 1]--;
+        replicate_log(ae.follower_no());
+    }
 }
 
 /**
@@ -232,11 +257,10 @@ void Server::handler_RequestVote_response(const RequestVote &rv)
  */
 void Server::handler_ClientRequest(Messenger::Request &req, const ClientRequest &cr)
 {
-    LOG_F(INFO, "S%d received CR: %s", server_no, cr.command().c_str());
-
-    m.lock();
+    std::lock_guard<std::mutex> lock(m);
     if (server_state != LEADER) {
-        m.unlock();
+        LOG_F(INFO, "S%d re-routing CR to S%d", 
+            server_no, last_observed_leader_no);
         RAFTmessage msg;
         ClientRequest *cr_response = new ClientRequest();
         cr_response->set_success(false);
@@ -246,36 +270,41 @@ void Server::handler_ClientRequest(Messenger::Request &req, const ClientRequest 
         return;
     }
 
-    std::lock_guard<std::mutex> lock(m);
+    LOG_F(INFO, "S%d logging CR: %s", server_no, cr.command().c_str());
+    
     log.push_back({cr.command(), current_term});
     pending_client_requests.push(req);
 
-    // Send new entry (or entries) to followers
-    for (int peer_idx = 0; peer_idx < server_addrs.size(); peer_idx++) {
-        int peer_no = peer_idx + 1;
-        if (peer_no == server_no || log.size() <= next_index[peer_idx]) continue;
-
-        RAFTmessage msg;
-        AppendEntries* ae = new AppendEntries();
-        ae->set_leader_no(server_no);
-        ae->set_term(current_term);
-        ae->set_prev_log_idx(next_index[peer_idx] - 1);
-        ae->set_prev_log_term(log[next_index[peer_idx] - 1].term);
-        ae->set_leader_commit(commit_index);
-
-        for (int new_entry_idx = next_index[peer_idx]; 
-             new_entry_idx < log.size();
-             new_entry_idx++) {
-            AppendEntries::LogEntry *entry = ae->add_log_entries();
-            entry->set_command(log[new_entry_idx].command);
-            entry->set_term(log[new_entry_idx].term);
-        }
-
-        msg.set_allocated_appendentries_message(ae);
-        messenger.sendRequest(server_addrs[peer_no], msg.SerializeAsString());
+    // Send new entry to followers
+    for (int peer_no = 1; peer_no <= server_addrs.size(); peer_no++) {
+        replicate_log(peer_no);
     }
 }
 
+void Server::replicate_log(int peer_no) {
+    int peer_idx = peer_no - 1;
+    std::lock_guard<std::mutex> lock(m);
+    if (peer_no == server_no || log.size() <= next_index[peer_idx]) return;
+
+    RAFTmessage msg;
+    AppendEntries* ae = new AppendEntries();
+    ae->set_leader_no(server_no);
+    ae->set_term(current_term);
+    ae->set_prev_log_idx(next_index[peer_idx] - 1);
+    ae->set_prev_log_term(log[next_index[peer_idx] - 1].term);
+    ae->set_leader_commit(commit_index);
+
+    for (int new_entry_idx = next_index[peer_idx]; 
+            new_entry_idx < log.size();
+            new_entry_idx++) {
+        AppendEntries::LogEntry *entry = ae->add_log_entries();
+        entry->set_command(log[new_entry_idx].command);
+        entry->set_term(log[new_entry_idx].term);
+    }
+
+    msg.set_allocated_appendentries_message(ae);
+    messenger.sendRequest(server_addrs[peer_no], msg.SerializeAsString());
+}
 /**
  * Append a command from the client to the local log (proj2), then send RPC
  * response with the result of executing the command.

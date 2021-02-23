@@ -2,69 +2,50 @@
 #include "RaftRPC.pb.h"
 #include <iostream>
 
-// only used in constructor. behavior: "127.0.0.95:8000" -> 8000
-int parsePort(std::string hostAndPort) {
-    return std::stoi(hostAndPort.substr(hostAndPort.find(":") + 1));
-}
-
-
 /**
  * Construct a client instance at the given address to be serviced by the
  * given cluster.
  */
-Client::Client(std::string myHostAndPort, 
-    const unordered_map<int, std::string>& cluster_map)
-    : _messenger(parsePort(myHostAndPort)),
-      _myHostAndPort(myHostAndPort),
-      _cluster_map(cluster_map) {}
-
-/**
- * Launches a RAFT shell, which loops indefinitely, accepting commands to be
- * run on the RAFT cluster.
- */
-void Client::run() {
-    std::cout << "--- WELCOME TO RASH (THE RAFT SHELL) ---\n";
-    for (;;) {
-        std::string cmd;
-        std::cout << "> ";
-        std::getline(std::cin, cmd);
-        std::cout << executeCommand(cmd) << "\n";
-    }
-}
+RaftClient::RaftClient(int client_port, const std::string cluster_file)
+  : messenger(client_port),
+    server_addrs(parseClusterInfo(cluster_file)) {}
 
 /**
  * Send a BASH cmd string to be run on the RAFT cluster, await a response, 
  * and return the output of the command.
  */
-std::string Client::executeCommand(std::string cmd) {
-    std::string serializedRequest;
+std::string RaftClient::execute_command(std::string cmd) {
+    std::string serialized_request;
     {
-        RPC rpc;
+        RAFTmessage msg;
         ClientRequest *cr = new ClientRequest();
+        msg.set_allocated_clientrequest_message(cr);
         cr->set_command(cmd);
-        cr->set_client_hostandport(_myHostAndPort);
-        rpc.set_allocated_clientrequest_message(cr);
-        serializedRequest = rpc.SerializeAsString();
+        serialized_request = msg.SerializeAsString();
     }
 
-    RPC serverResponse;
+    RAFTmessage server_response;
     do {
         // Cycle through servers until we find one that's not down
-        while (!_messenger.sendMessage(_cluster_map[_leaderID], serializedRequest)) {
-            _leaderID = (_leaderID + 1) % _cluster_map.size();
-            if (_leaderID == 0) ++_leaderID;
+        while (!messenger.sendRequest(server_addrs[leader_no], 
+            serialized_request)) {
+            leader_no = (leader_no + 1) % server_addrs.size();
+            if (leader_no == 0) leader_no++;
         }
 
-        std::optional<std::string> msgOpt;
-        while (!msgOpt) msgOpt = _messenger.getNextMessage();
+        return "sent"; // DEBUG
 
-        serverResponse.ParseFromString(*msgOpt);
+        // TODO(ali): incorporate the timeout feature
+        std::optional<std::string> msg_opt = messenger.getNextResponse();
+        if (msg_opt) server_response.ParseFromString(*msg_opt);
+        else continue;
 
+        // TODO(ali): fix dis
         // CASE: ill-formed response from server (should never happen)
-        if (!serverResponse.has_clientrequest_message()) return {};
+        if (!server_response.has_clientrequest_message()) return {};
 
-        _leaderID = serverResponse.clientrequest_message().leader_id();
-    } while (!serverResponse.clientrequest_message().success());
+        leader_no = server_response.clientrequest_message().leader_no();
+    } while (!server_response.clientrequest_message().success());
 
-    return serverResponse.clientrequest_message().output();
+    return server_response.clientrequest_message().output();
 }

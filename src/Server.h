@@ -40,7 +40,7 @@ class Server {
     /* PERSISTENT STATE */
     int current_term {0};
     Vote vote {-1, -1};
-    std::vector<LogEntry> log {{"", -1}}; // 1-INDEXED
+    std::vector<LogEntry> log {{"dummy head", -1}}; // 1-INDEXED
 
     /* VOLATILE STATE ON ALL SERVERS */
     int commit_index {0};
@@ -58,7 +58,8 @@ class Server {
     std::queue<Messenger::Request> pending_client_requests;
 
     // std::string _recovery_fname;      // name of instance's state recovery file
-    unordered_map<int, std::string> server_addrs; // map each node ID to its net address
+    // { server number -> net address }
+    unordered_map<int, std::string> server_addrs;
 
     /* UTIL */
     Messenger messenger;
@@ -80,6 +81,7 @@ class Server {
     void handler_ClientRequest(Messenger::Request &req, 
         const ClientRequest &cr);
 
+    void replicate_log(int peer_no);
     void start_election();
     void send_heartbeats();
 

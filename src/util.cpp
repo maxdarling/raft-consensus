@@ -72,5 +72,18 @@ std::unordered_map<int, std::string> parseClusterInfo(std::string serverFilePath
         clusterInfo.emplace(serverNum, hostAndPort);
     }
 
+    if (clusterInfo.empty()) {
+        throw std::invalid_argument("Invalid (or empty) server address list! "
+            "Either the file is improperly formatted, or the custom path to "
+            "the file is wrong, or the default server_list has been "
+            "deleted/moved/corrupted. See README for details.");
+    }
+
     return clusterInfo;
+}
+
+// behavior: "127.0.0.95:8000" -> 8000
+// TODO(ali): error checking? probably not actually since stoi already throws
+int parsePort(std::string hostAndPort) {
+    return std::stoi(hostAndPort.substr(hostAndPort.find(":") + 1));
 }

@@ -7,7 +7,6 @@
 const std::string SRC_DIR = std::string(__FILE__).substr(0, std::string(__FILE__).find_last_of("/") + 1);
 const std::string DEFAULT_SERVER_FILE_PATH =  SRC_DIR + "../server_list";
 
-
 /**
  * This class implements a timer which can be deterministic, going off after a
  * set duration, or stochastic, going off after a random duration in a specified
@@ -33,3 +32,5 @@ class Timer {
 
 std::unordered_map<int, sockaddr_in> parseClusterInfoBad(std::string serverFilePath);
 std::unordered_map<int, std::string> parseClusterInfo(std::string serverFilePath);
+int parsePort(std::string hostAndPort);
+

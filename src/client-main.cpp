@@ -3,27 +3,27 @@
 
 const int CLIENT_PORT = 3030;
 
+void run_shell(RaftClient &c);
+
 int main(int argc, char* argv[]) {
-    std::string serverFilePath = argc == 2? argv[1] : DEFAULT_SERVER_FILE_PATH;
+    std::string server_file = argc == 2? argv[1] : DEFAULT_SERVER_FILE_PATH;
+    RaftClient c(CLIENT_PORT, server_file);
 
-    unordered_map<int, std::string> clusterInfo = 
-        parseClusterInfo(serverFilePath);
-    if (clusterInfo.empty()) {
-        std::cerr << "Invalid server address list! Either the file is "
-            "improperly formatted, or the custom path to the file is wrong, or "
-            "the default server_list has been deleted/moved/corrupted. See "
-            "README for details.\n";
-        return EXIT_FAILURE;
-    }
-
-
-    // note: this won't be needed once socket architecture is changed
-    int clientIP = INADDR_ANY; // 0
-    std::string myHostAndPort = std::to_string(clientIP) + ":" +  
-                                std::to_string(CLIENT_PORT);
-
-    Client c(myHostAndPort, clusterInfo);
-    c.run();
+    run_shell(c);
 
     return 0;
+}
+
+/**
+ * Launches a RAFT shell, which loops indefinitely, accepting commands to be
+ * run on the RAFT cluster.
+ */
+void run_shell(RaftClient &c) {
+    std::cout << "--- WELCOME TO RASH (THE RAFT SHELL) ---\n";
+    for (;;) {
+        std::string cmd;
+        std::cout << "> ";
+        std::getline(std::cin, cmd);
+        std::cout << c.execute_command(cmd) << "\n";
+    }
 }

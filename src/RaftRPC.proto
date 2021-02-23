@@ -20,7 +20,7 @@ message AppendEntries {
     /* RESPONSE FIELDS */
     int32 follower_no = 7;
     bool success = 8;
-    int32 follower_commit = 9;
+    int32 follower_next_idx = 9;
 }
 
 message RequestVote {

@@ -6,16 +6,14 @@
  * (RASH) interface to the user, which forwards bash command strings to be run
  * by the servers in the RAFT cluster.
  */
-class Client {
+class RaftClient {
   public:
-    Client(std::string myHostAndPort, const unordered_map<int, std::string>& cluster_map);
-    void run();
+    RaftClient(int client_port, const std::string cluster_file);
+    std::string execute_command(std::string command);
     
   private:
-    Messenger _messenger;
-    std::string _myHostAndPort;
-    unordered_map<int, std::string> _cluster_map; // maps each cluster node's ID to it's network address
-    int _leaderID {1};  // Best guess as to whom the cluster leader is currently
-
-    std::string executeCommand(std::string command);
+    Messenger messenger;
+    // { server number -> net address }
+    unordered_map<int, std::string> server_addrs;
+    int leader_no {1};  // best guess of current cluster leader    
 };
