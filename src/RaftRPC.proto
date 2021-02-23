@@ -2,16 +2,25 @@
 syntax = "proto3";
 
 message AppendEntries {
+    message LogEntry {
+        string command = 1;
+        int32 term = 2;
+    }
+
     /* SHARED FIELD */
     int32 term = 1;
 
     /* REQUEST FIELD */
     int32 leader_no = 2;
+    int32 prev_log_idx = 3;
+    int32 prev_log_term = 4;
+    repeated LogEntry log_entries = 5;
+    int32 leader_commit = 6;
 
     /* RESPONSE FIELDS */
-    int32 follower_no = 3;
-    bool success = 4;
-    int32 index_last_commit = 5;
+    int32 follower_no = 7;
+    bool success = 8;
+    int32 follower_commit = 9;
 }
 
 message RequestVote {
@@ -27,14 +36,13 @@ message RequestVote {
 }
 
 message ClientRequest {
+    /* REQUEST FIELD */
     string command = 1;
-    string client_HostAndPort = 2; // so server knows who to repond to. 
-                                  // will be removed after socket architecture change
 
     /* RESPONSE FIELDS */
-    bool success = 4;
-    int32 leader_id = 5;
-    string output = 6;
+    bool success = 2;
+    int32 leader_no = 3;
+    string output = 4;
 }
 
 message RAFTmessage {

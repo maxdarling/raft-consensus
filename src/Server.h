@@ -3,6 +3,7 @@
 #include "Messenger.h"
 #include "TimedCallback.h"
 #include "util.h"
+#include <queue>
 
 /**  
  * This class implements a RAFT server instance. Each server in a RAFT cluster
@@ -24,32 +25,39 @@ class Server {
       LEADER
     };
 
-    /* To track most recent leader election vote. */
+    struct LogEntry {
+      std::string command;
+      int term;
+    };
+
     struct Vote {
       int term_voted;
       int voted_for;
     };
+  
     std::mutex m;
 
     /* PERSISTENT STATE */
     int current_term {0};
-    std::optional<Vote> vote;
+    Vote vote {-1, -1};
+    std::vector<LogEntry> log {{"", -1}}; // 1-INDEXED
 
     /* VOLATILE STATE ON ALL SERVERS */
-    int _commit_index {0};
-    int _last_applied {0};
+    int commit_index {0};
+    int last_applied {0};
 
     /* VOLATILE STATE ON LEADERS */
-    std::vector<int> _next_index;
-    std::vector<int> _match_index;
+    std::vector<int> next_index;
+    std::vector<int> match_index;
 
     /* ADDITIONAL STATE */
     int server_no;
     ServerState server_state {FOLLOWER};
     std::set<int> votes_received;
-
     int last_observed_leader_no {1};
-    std::string _recovery_fname;      // name of instance's state recovery file
+    std::queue<Messenger::Request> pending_client_requests;
+
+    // std::string _recovery_fname;      // name of instance's state recovery file
     unordered_map<int, std::string> server_addrs; // map each node ID to its net address
 
     /* UTIL */
@@ -75,15 +83,7 @@ class Server {
     void start_election();
     void send_heartbeats();
 
-    void process_command_routine(std::string command, std::string clientHostAndPort);
-    void leader_tasks();
-    bool try_election();
+    // void process_command_routine(std::string command, std::string clientHostAndPort);
     void apply_log_entries();
-
-    /*
-    void broadcast_RPC(const RPC &rpc);
-    void send_RPC(RPC rpc, int _server_id);
-    std::optional<RPC> receive_RPC();
-    */
-   void broadcast_msg(const RAFTmessage &msg);
+    void broadcast_msg(const RAFTmessage &msg);
 };
