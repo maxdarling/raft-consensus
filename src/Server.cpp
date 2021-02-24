@@ -325,65 +325,6 @@ void Server::replicate_log(int peer_no) {
     msg.set_allocated_appendentries_message(ae);
     messenger.sendRequest(server_addrs[peer_no], msg.SerializeAsString());
 }
-/**
- * Append a command from the client to the local log (proj2), then send RPC
- * response with the result of executing the command.
- */
-/*
-void Server::handler_ClientCommand(const ClientRequest &cr) {
-    sockaddr_in client_addr;
-    memset(&client_addr, '0', sizeof(client_addr));
-    client_addr.sin_family = AF_INET; // use IPv4
-    client_addr.sin_addr.s_addr = htons(cr.client_addr()); // use local IP
-    client_addr.sin_port = htons(cr.client_port());
-
-    // CASE: we're not the leader, so send response to client with ID of the
-    // last leader we observed
-    if (!_leader) {
-        RPC rpc;
-        ClientRequest *cr_reply = new ClientRequest();
-        cr_reply->set_success(false);
-        cr_reply->set_leader_id(_last_observed_leader_id);
-        rpc.set_allocated_clientrequest_message(cr_reply);
-        _messenger.sendMessageToClient(client_addr, rpc.SerializeAsString());
-        return;
-    }
-
-    // Execute command on its own thread so we don't block
-    std::thread th(&Server::process_command_routine, 
-        this, cr.command(), client_addr);
-    th.detach();
-}
-*/
-
-/**
- * Execute cmd string via bash and send response to client with the output.
- */
-/*
-void Server::process_command_routine(std::string cmd, sockaddr_in client_addr) {
-    // See README for a citation for this code snippet
-    std::string result;
-    std::array<char, 128> buf;
-    std::string bash_cmd = "bash -c \"" + cmd + "\"";
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(bash_cmd.c_str(), "r"), pclose);
-    if (!pipe) {
-        std::cerr << "popen() failed!\n";
-        return;
-    }
-    while (fgets(buf.data(), buf.size(), pipe.get()) != nullptr) {
-        result += buf.data();
-    }
-
-    // Send reply to client with result of running command
-    RPC rpc;
-    ClientRequest *cr_reply = new ClientRequest();
-    cr_reply->set_success(true);
-    cr_reply->set_leader_id(_last_observed_leader_id);
-    cr_reply->set_output(result);
-    rpc.set_allocated_clientrequest_message(cr_reply);
-    _messenger.sendMessageToClient(client_addr, rpc.SerializeAsString());
-}
-*/
 
 /**
  * send election
