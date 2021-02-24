@@ -52,11 +52,13 @@ set(CLIENT_HDRS
 
 set(TEST_SRCS
   src/Messenger.cpp
+  src/loguru/loguru.cpp
   ${PROTO_SRCS})
 
 set(TEST_HDRS
   src/Messenger.h
   src/BlockingQueue.h
+  src/loguru/loguru.hpp
   ${PROTO_HDRS})
 
 # add the executables

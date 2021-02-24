@@ -16,6 +16,8 @@
 #include <thread>
 #include <chrono>
 
+const int LOG_PRIORITY = 4;
+
 using std::cout, std::endl;
 using std::chrono::steady_clock;
 
@@ -64,7 +66,8 @@ int readEntireMessage(const int connfd, void* buf, int bytesToRead);
 Messenger::Messenger(const int listenPort) {
     // start a background thread to listen for connections
     _listenSock = createListeningSocket(listenPort);
-    cout << "listening socket is " << *_listenSock << endl;
+    // cout << "listening socket is " << *_listenSock << endl;
+    VLOG_F(LOG_PRIORITY, "listening socket is %d", *_listenSock);
     std::thread listener(&Messenger::listener, this);
     listener.detach();
 }
@@ -100,15 +103,19 @@ void Messenger::listener() {
     while(true) {
         int sockfd = accept(*_listenSock, nullptr, nullptr); 
         if (sockfd == -1) {
-            perror("listener(): 'accept()' failed\n");
+            // perror("listener(): 'accept()' failed\n");
+            VLOG_F(LOG_PRIORITY, "listener(): 'accept()' failed");
             if (errno == EBADF) {
-                cout << "listener(): socket was closed, exiting" << endl;
+                // cout << "listener(): socket was closed, exiting" << endl;
+                VLOG_F(LOG_PRIORITY, "listener(): socket was closed, exiting");
                 return;
             }
-            cout << "listener(): non-fatal error, continuing" << endl;
+            // cout << "listener(): non-fatal error, continuing" << endl;
+            VLOG_F(LOG_PRIORITY, "listener(): non-fatal error, continuing");
             continue;
         }
-        cout << "accepted connection on socket " << sockfd << endl;
+        // cout << "accepted connection on socket " << sockfd << endl;
+        VLOG_F(LOG_PRIORITY, "accepted connection on socket %d", sockfd);
 
         // create a new shared state variable for this socket 
         std::lock_guard<std::mutex> lock(_m);
@@ -164,12 +171,13 @@ void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
         _peerAddrToSocket.erase(_socketToState[sockfd]->peerAddr);
         free(_socketToState[sockfd]);
         _socketToState.erase(sockfd);
-        cout << "receiver: cleaned up socket " << sockfd << endl;
+        // cout << "receiver: cleaned up socket " << sockfd << endl;
     } else {
         _socketToState[sockfd]->oneExited = true;
         /* wakeup the sender */
         _socketToState[sockfd]->outboundMessages.notifyingPush("");
-        cout << "receiver: will let sender cleanup socket " << sockfd << endl;
+        // cout << "receiver: will let sender cleanup socket " << sockfd << endl;
+        VLOG_F(LOG_PRIORITY, "receiver: will let sender cleanup socket %d", sockfd);
     }
 }
 
@@ -218,10 +226,12 @@ void Messenger::sendMessagesTask(int sockfd) {
         _peerAddrToSocket.erase(_socketToState[sockfd]->peerAddr);
         free(_socketToState[sockfd]);
         _socketToState.erase(sockfd);
-        cout << "sender: cleaned up socket " << sockfd << endl;
+        // cout << "sender: cleaned up socket " << sockfd << endl;
+        VLOG_F(LOG_PRIORITY, "sender: cleaned up socket %d", sockfd);
     } else {
         _socketToState[sockfd]->oneExited = true;
-        cout << "sender: will let receiver cleanup socket " << sockfd << endl;
+        // cout << "sender: will let receiver cleanup socket " << sockfd << endl;
+        VLOG_F(LOG_PRIORITY, "sender: will let receiver cleanup socket %d", sockfd);
     }
 }
 
@@ -245,10 +255,12 @@ bool Messenger::sendRequest(std::string peerAddr, std::string message) {
     if (!_peerAddrToSocket.count(peerAddr)) {
         sockfd = establishConnection(peerAddr);
         if (sockfd == -1) {
-            cout << "connection failed to " << peerAddr << endl;
+            // cout << "connection failed to " << peerAddr << endl;
+            VLOG_F(LOG_PRIORITY, "connection failed to %s", peerAddr.c_str());
             return false;
         }
-        cout << "connection established with " << peerAddr << endl;
+        // cout << "connection established with " << peerAddr << endl;
+        VLOG_F(LOG_PRIORITY, "connection established with %s", peerAddr.c_str());
         _peerAddrToSocket[peerAddr] = sockfd;
 
         // create shared state for this socket
@@ -285,8 +297,10 @@ bool Messenger::sendRequest(std::string peerAddr, std::string message) {
 bool Messenger::Request::sendResponse(std::string message) {
     std::lock_guard<std::mutex> lock(_messengerParent._m);
     if (_messengerParent._socketToState[_sockfd]->timeCreated > _timestamp) {
-        cout << "sendResponse: can't respond, connection to"
-                "requester was closed" << endl;
+        // cout << "sendResponse: can't respond, connection to"
+        //         "requester was closed" << endl;
+        VLOG_F(LOG_PRIORITY, "sendResponse: can't respond, connection to "
+            "requester was closed");
         return false;
     }
 
@@ -339,23 +353,27 @@ int createListeningSocket(int port) {
 
     int listenfd;
     if((listenfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("\n Error : socket() failed \n");
+        // perror("\n Error : socket() failed \n");
+        VLOG_F(LOG_PRIORITY, "Error: socket() failed");
         exit(EXIT_FAILURE);
     } 
     // to prevent 'bind() failed: address already in use' errors on restarting
     int enable = 1;
     if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR,
                    &enable, sizeof(int)) < 0) {
-        perror("\n Error : setsockopt() failed \n");
+        // perror("\n Error : setsockopt() failed \n");
+        VLOG_F(LOG_PRIORITY, "Error: setsockopt() failed");
         exit(EXIT_FAILURE);
     }
     if (bind(listenfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        perror("\n Error : bind() failed \n");
+        // perror("\n Error : bind() failed \n");
+        VLOG_F(LOG_PRIORITY, "Error: bind() failed");
         exit(EXIT_FAILURE);
     }
     int MAX_BACKLOG_CONNECTIONS = 20;
     if (listen(listenfd, MAX_BACKLOG_CONNECTIONS) < 0) {
-        perror("\n Error : listen() failed \n");
+        // perror("\n Error : listen() failed \n");
+        VLOG_F(LOG_PRIORITY, "Error: listen() failed");
         exit(EXIT_FAILURE);
     }
     return listenfd;
@@ -380,18 +398,21 @@ int establishConnection(std::string peerAddr) {
     serv_addr.sin_port = htons(port);
     serv_addr.sin_addr.s_addr = inet_addr(IPstr.c_str()); // translate str IP
     if (serv_addr.sin_addr.s_addr == INADDR_NONE) {
-        perror("bad address.");
+        // perror("bad address.");
+        VLOG_F(LOG_PRIORITY, "bad address.");
         return -1;
     }
 
     // make the connection
     int connfd;
     if((connfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("\n Error : socket() failed \n");
+        // perror("\n Error : socket() failed \n");
+        VLOG_F(LOG_PRIORITY, "Error: socket() failed");
         return -1;
     } 
     if(connect(connfd, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("\n Error : connect() failed \n");
+        // perror("\n Error : connect() failed \n");
+        VLOG_F(LOG_PRIORITY, "Error: connect() failed");
         return -1;
     } 
 

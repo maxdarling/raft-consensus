@@ -30,17 +30,25 @@ class Server {
       int term;
     };
 
+    struct PendingRequest {
+      Messenger::Request req;
+      int log_idx;
+      int term;
+    };
+
     struct Vote {
       int term_voted;
       int voted_for;
     };
   
+    /* LOCK AROUND STATE */
     std::mutex m;
+    std::condition_variable new_commits_cv;
 
     /* PERSISTENT STATE */
     int current_term {0};
     Vote vote {-1, -1};
-    std::vector<LogEntry> log {{"dummy head", -1}}; // 1-INDEXED
+    std::vector<LogEntry> log {{"head", -1}}; // 1-INDEXED
 
     /* VOLATILE STATE ON ALL SERVERS */
     int commit_index {0};
@@ -55,7 +63,7 @@ class Server {
     ServerState server_state {FOLLOWER};
     std::set<int> votes_received;
     int last_observed_leader_no {1};
-    std::queue<Messenger::Request> pending_client_requests;
+    std::queue<PendingRequest> pending_requests;
 
     // std::string _recovery_fname;      // name of instance's state recovery file
     // { server number -> net address }
@@ -86,6 +94,6 @@ class Server {
     void send_heartbeats();
 
     // void process_command_routine(std::string command, std::string clientHostAndPort);
-    void apply_log_entries();
+    void apply_log_entries_task();
     void broadcast_msg(const RAFTmessage &msg);
 };

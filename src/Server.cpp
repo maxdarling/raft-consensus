@@ -29,8 +29,10 @@ void Server::run()
     election_timer.start();
 
     // TODO(ali): better way of doing this? at least reorder
+
+    std::thread(&Server::request_listener,  this).detach();
     std::thread(&Server::response_listener, this).detach();
-    std::thread(&Server::request_listener,  this).join();
+    std::thread(&Server::apply_log_entries_task, this).join();
 }
 
 /**
@@ -42,7 +44,6 @@ void Server::request_listener()
 
     for (;;) {
         std::optional<Messenger::Request> req_opt = messenger.getNextRequest();
-        LOG_F(INFO, "ACK!");
         if (req_opt) request_handler(*req_opt);
     }
 }
@@ -61,7 +62,7 @@ void Server::request_handler(Messenger::Request &req)
         server_state = FOLLOWER;
     }
     m.unlock();
-
+    
 
     if (msg.has_requestvote_message()) {
         handler_RequestVote(req, msg.requestvote_message());
@@ -114,8 +115,6 @@ void Server::response_handler(const RAFTmessage &msg)
 void Server::handler_AppendEntries(Messenger::Request &req, 
     const AppendEntries &ae)
 {
-    // LOG_F(INFO, "S%d received AE req from S%d", server_no, ae.leader_no());
-
     RAFTmessage response;
     AppendEntries *ae_response = new AppendEntries();
     // TODO(ali): does this work and if so should i do this for all msgs?
@@ -181,6 +180,7 @@ void Server::handler_AppendEntries(Messenger::Request &req,
 
     if (ae.leader_commit() > commit_index) {
         commit_index = MIN(ae.leader_commit(), new_entry_idx - 1);
+        new_commits_cv.notify_one();
     }
 
     ae_response->set_follower_next_idx(new_entry_idx);
@@ -195,6 +195,16 @@ void Server::handler_AppendEntries_response(const AppendEntries &ae)
     if (ae.success()) {
         next_index[ae.follower_no() - 1] = ae.follower_next_idx();
         match_index[ae.follower_no() - 1] = ae.follower_next_idx() - 1;
+
+        // potentially update commit index
+        auto mi_copy(match_index);
+        std::sort(mi_copy.begin(), mi_copy.end());
+        int greatest_committed_idx = mi_copy[mi_copy.size() / 2];
+        if (greatest_committed_idx > commit_index &&
+            log[greatest_committed_idx].term == current_term) {
+            commit_index = greatest_committed_idx;
+            new_commits_cv.notify_one();        
+        }
     }
     else {
         next_index[ae.follower_no() - 1]--;
@@ -282,7 +292,9 @@ void Server::handler_ClientRequest(Messenger::Request &req, const ClientRequest 
     LOG_F(INFO, "S%d logging CR: %s", server_no, cr.command().c_str());
     
     log.push_back({cr.command(), current_term});
-    pending_client_requests.push(req);
+    pending_requests.push(
+        {std::move(req), static_cast<int>(log.size() - 1), current_term}
+    );
 
     // Send new entry to followers
     for (int peer_no = 1; peer_no <= server_addrs.size(); peer_no++) {
@@ -292,7 +304,6 @@ void Server::handler_ClientRequest(Messenger::Request &req, const ClientRequest 
 
 void Server::replicate_log(int peer_no) {
     int peer_idx = peer_no - 1;
-    std::lock_guard<std::mutex> lock(m);
     if (peer_no == server_no || log.size() <= next_index[peer_idx]) return;
 
     RAFTmessage msg;
@@ -426,5 +437,70 @@ void Server::broadcast_msg(const RAFTmessage &msg)
     for (auto const &[peer_no, peer_addr] : server_addrs) {
         if (peer_no == server_no) continue;
         messenger.sendRequest(peer_addr, msg_str);
+    }
+}
+
+/* */
+void Server::apply_log_entries_task()
+{
+    for (;;) {
+        std::string cmd;
+
+        {
+            std::unique_lock<std::mutex> lock(m);
+            new_commits_cv.wait(lock, [this] { 
+                return commit_index > last_applied; 
+            });
+            cmd = log[++last_applied].command;
+        }
+
+        LOG_F(INFO, "S%d applying cmd: %s", server_no, cmd.c_str());
+        std::string bash_cmd = "bash -c \"" + cmd + "\"";
+        std::unique_ptr<FILE, decltype(&pclose)> pipe(
+            popen(bash_cmd.c_str(), "r"), pclose
+        );
+        std::string result;
+        std::array<char, 128> buf;
+        if (!pipe) {
+            LOG_F(ERROR, "S%d: popen() failed!", server_no);
+            result = "ERROR: popen() failed";
+        }
+        else {
+            while (fgets(buf.data(), buf.size(), pipe.get()) != nullptr) {
+                result += buf.data();
+            }
+        }
+
+        m.lock();
+        if (server_state == LEADER) {
+            while (!pending_requests.empty() && 
+                   pending_requests.front().log_idx < last_applied) {
+                LOG_F(ERROR, "S%d has lost client request @ idx %d",
+                    server_no, pending_requests.front().log_idx);
+                pending_requests.pop();
+            }
+
+            if (!pending_requests.empty() && 
+                pending_requests.front().log_idx == last_applied) {
+                PendingRequest &client_req = pending_requests.front();
+                if (client_req.term != log[last_applied].term) {
+                    LOG_F(ERROR, "client request term doesn't match associated "
+                        "log term");
+                }
+                else {
+                    LOG_F(INFO, "S%d sending result of cmd", server_no);
+                    RAFTmessage response;
+                    ClientRequest *cr = new ClientRequest();
+                    response.set_allocated_clientrequest_message(cr);
+                    cr->set_success(true);
+                    cr->set_leader_no(server_no);
+                    cr->set_output(result);
+                    client_req.req.sendResponse(response.SerializeAsString());
+                    pending_requests.pop();
+                }
+            }
+        }
+        // TODO(ali): dump stuff to file here
+        m.unlock();
     }
 }
