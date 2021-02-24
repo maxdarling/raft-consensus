@@ -74,9 +74,6 @@ class Server {
     TimedCallback election_timer;
     TimedCallback heartbeat_timer;
 
-    void request_listener();
-    void response_listener();
-
     void request_handler(Messenger::Request &req);
     void response_handler(const RAFTmessage &msg);
 

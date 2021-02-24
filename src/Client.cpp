@@ -14,13 +14,7 @@ using std::string, std::optional;
  */
 RaftClient::RaftClient(int client_port, const std::string cluster_file)
   : messenger(client_port),
-    server_addrs(parseClusterInfo(cluster_file)) {
-        RAFTmessage msg;
-        ClientRequest *cr = new ClientRequest();
-        msg.set_allocated_clientrequest_message(cr);
-        cr->set_echo_request(true);
-        serialized_echo = msg.SerializeAsString();
-}
+    server_addrs(parseClusterInfo(cluster_file)) {}
 
 /**
  * Send a BASH cmd string to be run on the RAFT cluster, await a response, 
@@ -49,6 +43,7 @@ std::string RaftClient::execute_command(std::string cmd) {
         optional<string> msg_opt;
         while (!msg_opt) {
             msg_opt = messenger.getNextResponse(REQUEST_TIMEOUT);
+            // check to see if the server is down by sending empty msg
             if (!msg_opt && 
                 !messenger.sendRequest(server_addrs[leader_no], "")) {
                 break;

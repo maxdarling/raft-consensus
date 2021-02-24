@@ -17,5 +17,4 @@ class RaftClient {
     // { server number -> net address }
     unordered_map<int, std::string> server_addrs;
     int leader_no {1};  // best guess of current cluster leader
-    std::string serialized_echo;
 };

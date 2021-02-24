@@ -1,6 +1,6 @@
 #include "Server.h"
 #include <array>
-#include <fstream>   // for ifstream, ofstream
+#include <fstream>
 #include <thread>
 
 /* In milliseconds */
@@ -8,44 +8,53 @@ const int ELECTION_TIMEOUT_LOWER_BOUND = 5000;
 const int ELECTION_TIMEOUT_UPPER_BOUND = 10000;
 const int HEARTBEAT_TIMEOUT = 2000;
 
+using std::optional, std::string, std::lock_guard, std::mutex;
+
 /**
  * Construct server
  */
-Server::Server(const int _server_no, const std::string cluster_file)
+Server::Server(const int _server_no, const string cluster_file)
   : server_no(_server_no),
     // TODO(ali): additional error checking on these?
     server_addrs(parseClusterInfo(cluster_file)),
     messenger(parsePort(server_addrs[server_no])),
     election_timer(ELECTION_TIMEOUT_LOWER_BOUND, ELECTION_TIMEOUT_UPPER_BOUND, 
                    std::bind(&Server::start_election, this)),
-    heartbeat_timer(HEARTBEAT_TIMEOUT, std::bind(&Server::send_heartbeats, this)) {}
+    heartbeat_timer(HEARTBEAT_TIMEOUT, 
+                    std::bind(&Server::send_heartbeats, this)) {}
 
 /**
  * run server
  */
 void Server::run()
 {
-    LOG_F(INFO, "S%d now running @ %s", server_no, server_addrs[server_no].c_str());
+    LOG_F(INFO, "S%d now running @ %s", 
+        server_no, server_addrs[server_no].c_str());
     election_timer.start();
 
-    // TODO(ali): better way of doing this? at least reorder
+    std::thread([this] {
+        loguru::set_thread_name("request listener");
 
-    std::thread(&Server::request_listener,  this).detach();
-    std::thread(&Server::response_listener, this).detach();
+        for (;;) {
+            optional<Messenger::Request> req_opt = messenger.getNextRequest();
+            if (req_opt) request_handler(*req_opt);
+        }
+    }).detach();
+
+    std::thread([this] {
+        loguru::set_thread_name("response listener");
+
+        for (;;) {
+            optional<string> res_opt = messenger.getNextResponse();
+            if (res_opt) {
+                RAFTmessage msg;
+                msg.ParseFromString(*res_opt);
+                response_handler(msg);
+            }
+        }
+    }).detach();
+
     std::thread(&Server::apply_log_entries_task, this).join();
-}
-
-/**
- * rl task
- */
-void Server::request_listener()
-{
-    loguru::set_thread_name("request listener");
-
-    for (;;) {
-        std::optional<Messenger::Request> req_opt = messenger.getNextRequest();
-        if (req_opt) request_handler(*req_opt);
-    }
 }
 
 /**
@@ -60,6 +69,7 @@ void Server::request_handler(Messenger::Request &req)
     if (msg.term() > current_term) {
         current_term = msg.term();
         server_state = FOLLOWER;
+        heartbeat_timer.stop();
     }
     m.unlock();
     
@@ -75,20 +85,6 @@ void Server::request_handler(Messenger::Request &req)
     }
 }
 
-void Server::response_listener()
-{
-    loguru::set_thread_name("response listener");
-
-    for (;;) {
-        std::optional<std::string> res_opt = messenger.getNextResponse();
-        if (res_opt) {
-            RAFTmessage msg;
-            msg.ParseFromString(*res_opt);
-            response_handler(msg);
-        }
-    }
-}
-
 /**
  * dispatch RPC message to correct handler
  */
@@ -98,6 +94,7 @@ void Server::response_handler(const RAFTmessage &msg)
     if (msg.term() > current_term) {
         current_term = msg.term();
         server_state = FOLLOWER;
+        heartbeat_timer.stop();
     }
     m.unlock();
 
@@ -120,7 +117,8 @@ void Server::handler_AppendEntries(Messenger::Request &req,
     // TODO(ali): does this work and if so should i do this for all msgs?
     response.set_allocated_appendentries_message(ae_response);
     ae_response->set_follower_no(server_no);
-    std::lock_guard<std::mutex> lock(m);
+    lock_guard<mutex> lock(m);
+    response.set_term(current_term);
     ae_response->set_term(current_term);
 
     // CASE: reject stale request
@@ -174,7 +172,8 @@ void Server::handler_AppendEntries(Messenger::Request &req,
             }
         }
 
-        LOG_F(INFO, "S%d replicating %s", server_no, new_entry.command.c_str());
+        LOG_F(INFO, "S%d replicating cmd: %s", server_no, 
+            new_entry.command.c_str());
         log.push_back(new_entry);
     }
 
@@ -190,18 +189,24 @@ void Server::handler_AppendEntries(Messenger::Request &req,
 
 void Server::handler_AppendEntries_response(const AppendEntries &ae)
 {
-    std::lock_guard<std::mutex> lock(m);
+    lock_guard<mutex> lock(m);
     if (server_state != LEADER) return;
     if (ae.success()) {
         next_index[ae.follower_no() - 1] = ae.follower_next_idx();
         match_index[ae.follower_no() - 1] = ae.follower_next_idx() - 1;
 
+        LOG_F(INFO, "match index of S%d noted as %d", 
+            ae.follower_no(), ae.follower_next_idx() - 1);
+
+        // update our own match index
+        match_index[server_no - 1] = log.size() - 1;
         // potentially update commit index
         auto mi_copy(match_index);
         std::sort(mi_copy.begin(), mi_copy.end());
         int greatest_committed_idx = mi_copy[mi_copy.size() / 2];
         if (greatest_committed_idx > commit_index &&
             log[greatest_committed_idx].term == current_term) {
+            // LOG_F(INFO, "UPDATING COMMIT IDX");
             commit_index = greatest_committed_idx;
             new_commits_cv.notify_one();        
         }
@@ -221,6 +226,7 @@ void Server::handler_RequestVote(Messenger::Request &req, const RequestVote &rv)
     RequestVote *rv_response = new RequestVote();
     rv_response->set_voter_no(server_no);
     m.lock();
+    response.set_term(current_term);
     rv_response->set_term(current_term);
     rv_response->set_vote_granted(false);
     if (vote.term_voted < current_term || vote.voted_for == rv.candidate_no()) {
@@ -246,7 +252,7 @@ void Server::handler_RequestVote(Messenger::Request &req, const RequestVote &rv)
 
 void Server::handler_RequestVote_response(const RequestVote &rv)
 {
-    std::lock_guard<std::mutex> lock(m);
+    lock_guard<mutex> lock(m);
     if (server_state != CANDIDATE) return;
     if (rv.vote_granted()) votes_received.insert(rv.voter_no());
 
@@ -266,25 +272,19 @@ void Server::handler_RequestVote_response(const RequestVote &rv)
 /**
  * process client request
  */
-void Server::handler_ClientRequest(Messenger::Request &req, const ClientRequest &cr)
+void Server::handler_ClientRequest(Messenger::Request &req, 
+    const ClientRequest &cr)
 {
     RAFTmessage response;
     ClientRequest *cr_response = new ClientRequest();
     response.set_allocated_clientrequest_message(cr_response);
 
-    std::lock_guard<std::mutex> lock(m);
+    lock_guard<mutex> lock(m);
     if (server_state != LEADER) {
         LOG_F(INFO, "S%d re-routing CR to S%d", 
             server_no, last_observed_leader_no);
         cr_response->set_success(false);
         cr_response->set_leader_no(last_observed_leader_no);
-        req.sendResponse(response.SerializeAsString());
-        return;
-    }
-
-    if (cr.echo_request()) {
-        LOG_F(INFO, "S%d sending echo to client", server_no);
-        cr_response->set_echo(true);
         req.sendResponse(response.SerializeAsString());
         return;
     }
@@ -309,6 +309,7 @@ void Server::replicate_log(int peer_no) {
     RAFTmessage msg;
     AppendEntries* ae = new AppendEntries();
     ae->set_leader_no(server_no);
+    msg.set_term(current_term);
     ae->set_term(current_term);
     ae->set_prev_log_idx(next_index[peer_idx] - 1);
     ae->set_prev_log_term(log[next_index[peer_idx] - 1].term);
@@ -333,7 +334,7 @@ void Server::start_election()
 {
     LOG_F(INFO, "S%d starting election", server_no);
 
-    std::lock_guard<std::mutex> lock(m);
+    lock_guard<mutex> lock(m);
     server_state = CANDIDATE;
     ++current_term;
     votes_received = { server_no }; // vote for self
@@ -341,6 +342,7 @@ void Server::start_election()
 
     RAFTmessage msg;
     RequestVote *rv = new RequestVote();
+    msg.set_term(current_term);
     rv->set_term(current_term);
     rv->set_candidate_no(server_no);
     msg.set_allocated_requestvote_message(rv);
@@ -357,24 +359,18 @@ void Server::send_heartbeats()
     RAFTmessage heartbeat_msg;
     AppendEntries *ae_heartbeat = new AppendEntries();
     ae_heartbeat->set_leader_no(server_no);
+    heartbeat_msg.set_term(current_term);
     ae_heartbeat->set_term(current_term);
     heartbeat_msg.set_allocated_appendentries_message(ae_heartbeat);
     broadcast_msg(heartbeat_msg);
 }
 
 /**
- * Execute commands from log until _last_applied == _commit_index (proj2).
- */
-/*
-void Server::apply_log_entries() {}
-*/
-
-/**
  * broadcast
  */
 void Server::broadcast_msg(const RAFTmessage &msg)
 {
-    std::string msg_str = msg.SerializeAsString();
+    string msg_str = msg.SerializeAsString();
     for (auto const &[peer_no, peer_addr] : server_addrs) {
         if (peer_no == server_no) continue;
         messenger.sendRequest(peer_addr, msg_str);
@@ -384,11 +380,12 @@ void Server::broadcast_msg(const RAFTmessage &msg)
 /* */
 void Server::apply_log_entries_task()
 {
+    loguru::set_thread_name("apply log entries task");
     for (;;) {
-        std::string cmd;
+        string cmd;
 
         {
-            std::unique_lock<std::mutex> lock(m);
+            std::unique_lock<mutex> lock(m);
             new_commits_cv.wait(lock, [this] { 
                 return commit_index > last_applied; 
             });
@@ -396,11 +393,11 @@ void Server::apply_log_entries_task()
         }
 
         LOG_F(INFO, "S%d applying cmd: %s", server_no, cmd.c_str());
-        std::string bash_cmd = "bash -c \"" + cmd + "\"";
+        string bash_cmd = "bash -c \"" + cmd + "\"";
         std::unique_ptr<FILE, decltype(&pclose)> pipe(
             popen(bash_cmd.c_str(), "r"), pclose
         );
-        std::string result;
+        string result;
         std::array<char, 128> buf;
         if (!pipe) {
             LOG_F(ERROR, "S%d: popen() failed!", server_no);
