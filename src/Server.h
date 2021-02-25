@@ -2,6 +2,7 @@
 #include "RaftRPC.pb.h"
 #include "Messenger.h"
 #include "TimedCallback.h"
+#include "PersistentStorage.h"
 #include "util.h"
 #include <queue>
 
@@ -15,7 +16,8 @@ class Server {
     Server(const int server_id, 
         const unordered_map<int, std::string>& cluster_map);
   */
-    Server(const int _server_no, const std::string cluster_file);
+    Server(const int _server_no, const std::string cluster_file, 
+      bool restarting);
     void run();
 
   private:
@@ -65,17 +67,20 @@ class Server {
     int last_observed_leader_no {1};
     std::queue<PendingRequest> pending_requests;
 
-    // std::string _recovery_fname;      // name of instance's state recovery file
     // { server number -> net address }
     unordered_map<int, std::string> server_addrs;
+    // name of instance's state recovery file
+    std::string recovery_file;
 
     /* UTIL */
+    PersistentStorage persistent_storage;
     Messenger messenger;
     TimedCallback election_timer;
     TimedCallback heartbeat_timer;
 
     void request_handler(Messenger::Request &req);
     void response_handler(const RAFTmessage &msg);
+    void process_RAFTmessage(const RAFTmessage &msg);
 
     void handler_AppendEntries(Messenger::Request &req, 
         const AppendEntries &ae);

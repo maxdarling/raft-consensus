@@ -30,6 +30,7 @@ set(SERVER_HDRS
   src/Server.h
   src/Messenger.h
   src/TimedCallback.h
+  src/PersistentStorage.h
   src/util.h
   src/BlockingQueue.h
   src/loguru/loguru.hpp

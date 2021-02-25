@@ -58,4 +58,5 @@ message ServerPersistentState {
     int32 current_term = 1;
     int32 term_voted = 2;
     int32 voted_for = 3;
+    int32 last_applied = 4;
 }

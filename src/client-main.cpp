@@ -8,9 +8,8 @@ void run_shell(RaftClient &c);
 int main(int argc, char* argv[]) {
     loguru::init(argc, argv);
     loguru::add_file("client.log", loguru::Truncate, loguru::Verbosity_MAX);
-    std::string server_file = argc == 2? argv[1] : DEFAULT_SERVER_FILE_PATH;
-    RaftClient c(CLIENT_PORT, server_file);
 
+    RaftClient c(CLIENT_PORT, DEFAULT_SERVER_FILE_PATH);
     run_shell(c);
 
     return 0;

@@ -1,6 +1,5 @@
 #include "Server.h"
 #include <array>
-#include <fstream>
 #include <thread>
 
 /* In milliseconds */
@@ -13,15 +12,36 @@ using std::optional, std::string, std::lock_guard, std::mutex;
 /**
  * Construct server
  */
-Server::Server(const int _server_no, const string cluster_file)
+Server::Server(const int _server_no, const string cluster_file, bool restarting)
   : server_no(_server_no),
     // TODO(ali): additional error checking on these?
     server_addrs(parseClusterInfo(cluster_file)),
+    recovery_file("server" + std::to_string(server_no) + "_state"),
+    persistent_storage(recovery_file),
     messenger(parsePort(server_addrs[server_no])),
     election_timer(ELECTION_TIMEOUT_LOWER_BOUND, ELECTION_TIMEOUT_UPPER_BOUND, 
                    std::bind(&Server::start_election, this)),
     heartbeat_timer(HEARTBEAT_TIMEOUT, 
-                    std::bind(&Server::send_heartbeats, this)) {}
+                    std::bind(&Server::send_heartbeats, this)) 
+{
+    if (restarting) {
+        if (!persistent_storage.recover()) {
+            string err_msg = "S" + std::to_string(server_no) 
+                + " could not open recovery file";
+            LOG_F(ERROR, "%s", err_msg.c_str());
+            throw std::runtime_error(err_msg);
+        }
+
+        LOG_F(INFO, "S%d recovering state from file", server_no);
+        ServerPersistentState &sps = persistent_storage.state();
+        current_term = sps.current_term();
+        if (sps.voted_for() != 0) vote = {sps.term_voted(), sps.voted_for()};
+        last_applied = sps.last_applied();
+        LOG_F(INFO, "term: %d | vote term: %d | "
+                    "voted for: S%d | last applied: %d", 
+            current_term, vote.term_voted, vote.voted_for, last_applied);
+    }
+}
 
 /**
  * run server
@@ -64,15 +84,7 @@ void Server::request_handler(Messenger::Request &req)
 {
     RAFTmessage msg;
     msg.ParseFromString(req.message);
-
-    m.lock();
-    if (msg.term() > current_term) {
-        current_term = msg.term();
-        server_state = FOLLOWER;
-        heartbeat_timer.stop();
-    }
-    m.unlock();
-    
+    process_RAFTmessage(msg);
 
     if (msg.has_requestvote_message()) {
         handler_RequestVote(req, msg.requestvote_message());
@@ -90,13 +102,7 @@ void Server::request_handler(Messenger::Request &req)
  */
 void Server::response_handler(const RAFTmessage &msg)
 {
-    m.lock();
-    if (msg.term() > current_term) {
-        current_term = msg.term();
-        server_state = FOLLOWER;
-        heartbeat_timer.stop();
-    }
-    m.unlock();
+    process_RAFTmessage(msg);
 
     if (msg.has_requestvote_message()) {
         handler_RequestVote_response(msg.requestvote_message());
@@ -104,6 +110,18 @@ void Server::response_handler(const RAFTmessage &msg)
     else if (msg.has_appendentries_message()) {
         handler_AppendEntries_response(msg.appendentries_message());
     }
+}
+
+void Server::process_RAFTmessage(const RAFTmessage &msg)
+{
+    lock_guard<mutex> lock(m);
+    if (msg.term() > current_term) {
+        current_term = msg.term();
+        persistent_storage.state().set_current_term(current_term);
+        persistent_storage.save();
+        server_state = FOLLOWER;
+        heartbeat_timer.stop();
+    } 
 }
 
 /**
@@ -232,9 +250,12 @@ void Server::handler_RequestVote(Messenger::Request &req, const RequestVote &rv)
     if (vote.term_voted < current_term || vote.voted_for == rv.candidate_no()) {
         if (rv.term() >= current_term) {
             LOG_F(INFO, "S%d voting for S%d", server_no, rv.candidate_no());
+            election_timer.start();
             rv_response->set_vote_granted(true);
             vote = {current_term, rv.candidate_no()};
-            election_timer.start();
+            persistent_storage.state().set_term_voted(current_term);
+            persistent_storage.state().set_voted_for(rv.candidate_no());
+            persistent_storage.save();
         }
         else {
             LOG_F(INFO, "S%d not voting for S%d: stale request", 
@@ -336,8 +357,11 @@ void Server::start_election()
 
     lock_guard<mutex> lock(m);
     server_state = CANDIDATE;
-    ++current_term;
-    votes_received = { server_no }; // vote for self
+    current_term++;
+    persistent_storage.state().set_current_term(current_term);
+    persistent_storage.save();
+    votes_received = {server_no}; // vote for self
+    vote = {current_term, server_no};
     election_timer.start();
 
     RAFTmessage msg;
@@ -438,7 +462,8 @@ void Server::apply_log_entries_task()
                 }
             }
         }
-        // TODO(ali): dump stuff to file here
+        persistent_storage.state().set_last_applied(last_applied);
+        persistent_storage.save();
         m.unlock();
     }
 }

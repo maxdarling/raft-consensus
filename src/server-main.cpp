@@ -13,18 +13,6 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    std::string serverFilePath = argc == 3? argv[2] : DEFAULT_SERVER_FILE_PATH;
-
-    unordered_map<int, std::string> clusterInfo = 
-        parseClusterInfo(serverFilePath);
-    if (clusterInfo.empty()) {
-        std::cerr << "Invalid server address list! Either the file is "
-            "improperly formatted, or the custom path to the file is wrong, or "
-            "the default server_list has been deleted/moved/corrupted. See "
-            "README for details.\n";
-        return EXIT_FAILURE;
-    }
-
     int serverNumber;
     try { serverNumber = std::stoi(argv[1]); }
     catch (const std::exception &exc) {
@@ -32,8 +20,11 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    // std::cout << "SERVER #" << serverNumber << " NOW RUNNING\n";
-    Server s(serverNumber, DEFAULT_SERVER_FILE_PATH);
+    bool restarting = false;
+    if (argc >= 3) restarting = strcmp(argv[2], "-r") == 0 || 
+                                strcmp(argv[2], "-R") == 0;
+
+    Server s(serverNumber, DEFAULT_SERVER_FILE_PATH, restarting);
     s.run();
 
     return 0;
