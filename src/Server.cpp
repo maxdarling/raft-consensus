@@ -447,7 +447,7 @@ void Server::apply_log_entries_task()
                 PendingRequest &client_req = pending_requests.front();
                 if (client_req.term != log[last_applied].term) {
                     LOG_F(ERROR, "client request term doesn't match associated "
-                        "log term");
+                                 "log term");
                 }
                 else {
                     LOG_F(INFO, "S%d sending result of cmd", server_no);
@@ -462,8 +462,8 @@ void Server::apply_log_entries_task()
                 }
             }
         }
+        m.unlock();
         persistent_storage.state().set_last_applied(last_applied);
         persistent_storage.save();
-        m.unlock();
     }
 }

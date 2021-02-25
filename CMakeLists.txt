@@ -22,6 +22,7 @@ set(SERVER_SRCS
   src/Server.cpp
   src/Messenger.cpp
   src/TimedCallback.cpp
+  src/Log.cpp
   src/util.cpp
   src/loguru/loguru.cpp
   ${PROTO_SRCS})
@@ -30,6 +31,7 @@ set(SERVER_HDRS
   src/Server.h
   src/Messenger.h
   src/TimedCallback.h
+  src/Log.h
   src/PersistentStorage.h
   src/util.h
   src/BlockingQueue.h

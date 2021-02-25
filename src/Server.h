@@ -2,6 +2,7 @@
 #include "RaftRPC.pb.h"
 #include "Messenger.h"
 #include "TimedCallback.h"
+#include "Log.h"
 #include "PersistentStorage.h"
 #include "util.h"
 #include <queue>
@@ -12,10 +13,6 @@
  */
 class Server {
   public:
-  /*
-    Server(const int server_id, 
-        const unordered_map<int, std::string>& cluster_map);
-  */
     Server(const int _server_no, const std::string cluster_file, 
       bool restarting);
     void run();
@@ -95,7 +92,6 @@ class Server {
     void start_election();
     void send_heartbeats();
 
-    // void process_command_routine(std::string command, std::string clientHostAndPort);
     void apply_log_entries_task();
     void broadcast_msg(const RAFTmessage &msg);
 };
