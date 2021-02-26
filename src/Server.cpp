@@ -13,7 +13,20 @@ using std::optional, std::string, std::lock_guard, std::mutex;
  * Construct server
  */
 Server::Server(const int _server_no, const string cluster_file, bool restarting)
-  : server_no(_server_no),
+  : log_file("log" + std::to_string(_server_no)),
+    log(log_file, 
+        [](const LogEntry &entry) {
+            return std::to_string(entry.term) + " " + entry.command;
+        },
+
+        [](string entry_str) {
+            size_t delimiter_idx = entry_str.find(" ");
+            int term = std::stoi(entry_str.substr(0, delimiter_idx));
+            string command = entry_str.substr(delimiter_idx + 1);
+            return LogEntry {command, term};
+        }
+    ),
+    server_no(_server_no),
     // TODO(ali): additional error checking on these?
     server_addrs(parseClusterInfo(cluster_file)),
     recovery_file("server" + std::to_string(server_no) + "_state"),
@@ -25,8 +38,8 @@ Server::Server(const int _server_no, const string cluster_file, bool restarting)
                     std::bind(&Server::send_heartbeats, this)) 
 {
     if (restarting) {
-        persistent_storage.recover();
         LOG_F(INFO, "S%d recovering state from file", server_no);
+        persistent_storage.recover();
         ServerPersistentState &sps = persistent_storage.state();
         current_term = sps.current_term();
         if (sps.voted_for() != 0) vote = {sps.term_voted(), sps.voted_for()};
@@ -34,7 +47,10 @@ Server::Server(const int _server_no, const string cluster_file, bool restarting)
         LOG_F(INFO, "term: %d | vote term: %d | "
                     "voted for: S%d | last applied: %d", 
             current_term, vote.term_voted, vote.voted_for, last_applied);
+        log.recover(last_applied);
     }
+
+    else log.clear();
 }
 
 /**
@@ -152,7 +168,8 @@ void Server::handler_AppendEntries(Messenger::Request &req,
     // CASE: heartbeat received, no log entries to process
     if (ae.log_entries_size() == 0) return;
 
-    if (log[ae.prev_log_idx()].term != ae.prev_log_term()) {
+    if (ae.prev_log_idx() > 0 && 
+        log[ae.prev_log_idx()].term != ae.prev_log_term()) {
         LOG_F(INFO, "S%d prev log entry doesn't match AE req from S%d", 
             server_no, ae.leader_no());
         ae_response->set_success(false);
@@ -166,7 +183,7 @@ void Server::handler_AppendEntries(Messenger::Request &req,
         LogEntry new_entry = {ae.log_entries(i).command(), 
             ae.log_entries(i).term()};
         // CASE: an entry at this index already exists in log
-        if (new_entry_idx < log.size()) {
+        if (new_entry_idx <= log.size()) {
             if (log[new_entry_idx].term != new_entry.term) {
                 LOG_F(INFO, "S%d received conflicting log entry: "
                             "\"%s\" replaced with \"%s\"", 
@@ -175,7 +192,8 @@ void Server::handler_AppendEntries(Messenger::Request &req,
                     new_entry.command.c_str()
                 );
 
-                log.resize(new_entry_idx);
+                // log.resize(new_entry_idx);
+                log.trunc(new_entry_idx - 1);
             }
             else {
                 LOG_F(INFO, "S%d received entry it already has from S%d",
@@ -186,7 +204,8 @@ void Server::handler_AppendEntries(Messenger::Request &req,
 
         LOG_F(INFO, "S%d replicating cmd: %s", server_no, 
             new_entry.command.c_str());
-        log.push_back(new_entry);
+        // log.push_back(new_entry);
+        log.append(new_entry);
     }
 
     if (ae.leader_commit() > commit_index) {
@@ -211,7 +230,7 @@ void Server::handler_AppendEntries_response(const AppendEntries &ae)
             ae.follower_no(), ae.follower_next_idx() - 1);
 
         // update our own match index
-        match_index[server_no - 1] = log.size() - 1;
+        match_index[server_no - 1] = log.size();
         // potentially update commit index
         auto mi_copy(match_index);
         std::sort(mi_copy.begin(), mi_copy.end());
@@ -279,7 +298,7 @@ void Server::handler_RequestVote_response(const RequestVote &rv)
         election_timer.stop();
         send_heartbeats();
         heartbeat_timer.start();
-        next_index.assign(server_addrs.size(), log.size());
+        next_index.assign(server_addrs.size(), log.size() + 1);
         match_index.assign(server_addrs.size(), 0);
     }
 }
@@ -306,9 +325,10 @@ void Server::handler_ClientRequest(Messenger::Request &req,
 
     LOG_F(INFO, "S%d logging CR: %s", server_no, cr.command().c_str());
     
-    log.push_back({cr.command(), current_term});
+    // log.push_back({cr.command(), current_term});
+    log.append({cr.command(), current_term});
     pending_requests.push(
-        {std::move(req), static_cast<int>(log.size() - 1), current_term}
+        {std::move(req), log.size(), current_term}
     );
 
     // Send new entry to followers
@@ -319,7 +339,7 @@ void Server::handler_ClientRequest(Messenger::Request &req,
 
 void Server::replicate_log(int peer_no) {
     int peer_idx = peer_no - 1;
-    if (peer_no == server_no || log.size() <= next_index[peer_idx]) return;
+    if (peer_no == server_no || log.size() < next_index[peer_idx]) return;
 
     RAFTmessage msg;
     AppendEntries* ae = new AppendEntries();
@@ -327,11 +347,13 @@ void Server::replicate_log(int peer_no) {
     msg.set_term(current_term);
     ae->set_term(current_term);
     ae->set_prev_log_idx(next_index[peer_idx] - 1);
-    ae->set_prev_log_term(log[next_index[peer_idx] - 1].term);
+    if (next_index[peer_idx] - 1 > 0) {
+        ae->set_prev_log_term(log[next_index[peer_idx] - 1].term);
+    }
     ae->set_leader_commit(commit_index);
 
     for (int new_entry_idx = next_index[peer_idx]; 
-            new_entry_idx < log.size();
+            new_entry_idx <= log.size();
             new_entry_idx++) {
         AppendEntries::LogEntry *entry = ae->add_log_entries();
         entry->set_command(log[new_entry_idx].command);

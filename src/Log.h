@@ -1,8 +1,8 @@
 #include <string>
 #include <vector>
 #include <fstream>
-#include <iostream> // FOR DEBUGGING
 #include <unistd.h>
+#include <cstdio>
 
 const int TABLE_ENTRY_WIDTH = 5;
 
@@ -22,6 +22,7 @@ class Log {
         std::function<std::string(const T&)> _serialize_entry, 
         std::function<T(std::string)> _deserialize_entry);
 
+    void clear();
     void recover(int _offset = 0);
     void trunc(int new_size);
     void append(const T &entry);
@@ -59,6 +60,14 @@ Log<T>::Log(std::string file_name,
     table_file(file_name + "table"),
     serialize_entry(_serialize_entry),
     deserialize_entry(_deserialize_entry) {}
+
+template <typename T>
+void Log<T>::clear()
+{
+    log_cache.clear();
+    std::remove(log_file.c_str());
+    std::remove(table_file.c_str());
+}
 
 /**
  * Recover a log from the file specified in the constructor. Only the entries
@@ -123,6 +132,8 @@ void Log<T>::append(const T &entry)
 template <typename T>
 T Log<T>::operator[](int i)
 {
+    if (i < 1 || i > size()) throw std::runtime_error("Index out of bounds");
+
     // cache hit
     if (i > offset) return log_cache[i - offset - 1];
 

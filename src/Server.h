@@ -39,6 +39,9 @@ class Server {
       int term_voted;
       int voted_for;
     };
+
+    /* LOG FILE NAME */
+    std::string log_file;
   
     /* LOCK AROUND STATE */
     std::mutex m;
@@ -47,7 +50,8 @@ class Server {
     /* PERSISTENT STATE */
     int current_term {0};
     Vote vote {-1, -1};
-    std::vector<LogEntry> log {{"head", -1}}; // 1-INDEXED
+    // std::vector<LogEntry> log {{"head", -1}}; // 1-INDEXED
+    Log<LogEntry> log;
 
     /* VOLATILE STATE ON ALL SERVERS */
     int commit_index {0};
