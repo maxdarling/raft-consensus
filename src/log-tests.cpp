@@ -14,8 +14,8 @@ string serialize(const LogEntry &entry);
 LogEntry deserialize(string entry_str);
 
 int main(int argc, char* argv[]) {
-    std::remove(test_file.c_str());
     string table_file = test_file + "table";
+    std::remove(test_file.c_str());
     std::remove(table_file.c_str());
 
     std::vector<LogEntry> entries = {{"pwd", 12}, {"ls | echo", 1}, 
@@ -51,6 +51,9 @@ int main(int argc, char* argv[]) {
                    entries[j].term == l[j + 1].term);   
         }
     }
+
+    std::remove(test_file.c_str());
+    std::remove(table_file.c_str());
 
     cout << "ALL TESTS PASS!\n";
     return 0;
