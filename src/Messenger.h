@@ -85,3 +85,17 @@ class Messenger {
         /* port to listen for requests on (client-only) */
         std::optional<int> _listenSock;
 };
+
+
+// exception class for messenger exceptions
+class MessengerException : public std::exception {
+    private:
+        std::string _msg;
+    public:
+        MessengerException(const std::string& msg) : _msg(msg){}
+
+        virtual const char* what() const noexcept override
+        {
+            return _msg.c_str();
+        } 
+};
