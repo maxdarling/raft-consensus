@@ -262,13 +262,23 @@ void Server::handler_RequestVote(Messenger::Request &req, const RequestVote &rv)
     rv_response->set_vote_granted(false);
     if (vote.term_voted < current_term || vote.voted_for == rv.candidate_no()) {
         if (rv.term() >= current_term) {
-            LOG_F(INFO, "S%d voting for S%d", server_no, rv.candidate_no());
-            election_timer.start();
-            rv_response->set_vote_granted(true);
-            vote = {current_term, rv.candidate_no()};
-            persistent_storage.state().set_term_voted(current_term);
-            persistent_storage.state().set_voted_for(rv.candidate_no());
-            persistent_storage.save();
+            // Election restriction described in Section 5.4.1 of the Raft paper
+            if (log.empty() || 
+                rv.last_log_term() > log[log.size()].term || 
+                (rv.last_log_term() == log[log.size()].term && 
+                 rv.last_log_idx() >= log.size())) {
+                LOG_F(INFO, "S%d voting for S%d", server_no, rv.candidate_no());
+                election_timer.start();
+                rv_response->set_vote_granted(true);
+                vote = {current_term, rv.candidate_no()};
+                persistent_storage.state().set_term_voted(current_term);
+                persistent_storage.state().set_voted_for(rv.candidate_no());
+                persistent_storage.save();
+            }
+            else {
+                LOG_F(INFO, "S%d not voting for S%d: log out-of-date", 
+                    server_no, rv.candidate_no());            
+            }
         }
         else {
             LOG_F(INFO, "S%d not voting for S%d: stale request", 
@@ -385,6 +395,8 @@ void Server::start_election()
     msg.set_term(current_term);
     rv->set_term(current_term);
     rv->set_candidate_no(server_no);
+    rv->set_last_log_idx(log.size());
+    if (!log.empty()) rv->set_last_log_term(log[log.size()].term);
     msg.set_allocated_requestvote_message(rv);
     broadcast_msg(msg);
 }

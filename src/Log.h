@@ -27,6 +27,7 @@ class Log {
     void trunc(int new_size);
     void append(const T &entry);
     int size() const { return log_cache.size() + offset; }
+    bool empty() const { return size() == 0; }
 
     T operator[](int i); // 1-INDEXED
 

@@ -29,10 +29,12 @@ message RequestVote {
 
     /* REQUEST FIELD */
     int32 candidate_no = 2;
+    int32 last_log_idx = 3;
+    int32 last_log_term = 4;
 
     /* RESPONSE FIELDS */
-    int32 voter_no = 3;
-    bool vote_granted = 4;
+    int32 voter_no = 5;
+    bool vote_granted = 6;
 }
 
 message ClientRequest {
