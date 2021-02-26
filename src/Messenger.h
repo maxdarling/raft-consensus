@@ -10,12 +10,12 @@ using std::chrono::steady_clock;
 
 /**
  * The Messenger class implements message-based communication between servers
- * and clients.  
+ * and clients with request/response semantics.  
  * 
- * Client/Server Differences: 
+ * Client/Server Roles:
  *   - Clients: Send requests to servers and get back responses. 
  *
- *   - Servers: Get requests from and send responses to clients. 
+ *   - Servers: Receive requests from clients and send back responses. 
  *              Do anything with other severs. 
  */
 class Messenger {
@@ -69,7 +69,8 @@ class Messenger {
             /* flag to indicate the destructor closed the socket. */
             bool destructorClosed = false;
         };
-        /* maps each socket to state shared with its worker threads */
+
+        /* maps each socket to the state shared with its worker threads */
         unordered_map<int, SocketState *> _socketToState;
 
         /* maps peer network addresses to their associated sockets */
@@ -82,7 +83,7 @@ class Messenger {
         BlockingQueue<Request> _requestQueue;
         BlockingQueue<std::string> _responseQueue; 
 
-        /* port to listen for requests on (client-only) */
+        /* port to listen for requests on (server-only) */
         std::optional<int> _listenSock;
 };
 

@@ -113,7 +113,7 @@ void Messenger::listener() {
 
         // create a new shared state variable for this socket 
         std::lock_guard<std::mutex> lock(_m);
-        assert(!_socketToState.count(sockfd)); // ensure earlier cleanup was atomic
+        assert(!_socketToState.count(sockfd)); // guarantee prior cleanup
         _socketToState[sockfd] = new SocketState{}; 
         _socketToState[sockfd]->timeCreated = steady_clock::now(); 
 
@@ -132,7 +132,8 @@ void Messenger::listener() {
  * Receiver worker task. Continually reads messages and places them in the 
  * appropriate queue. 
  *
- * @param shouldReadRequests true if requests should be parsed, false for responses. 
+ * 'shouldReadRequests' indicates whether the worker will parse incoming 
+ * requests or responses. 
  */
 void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
     while(true) {
@@ -156,7 +157,8 @@ void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
         }
     }
 
-    // we broke from the loop due to an error. cleanup socket and exit. std::lock_guard<std::mutex> lock(_m);
+    // we broke from the loop due to an error. cleanup socket and exit. 
+    std::lock_guard<std::mutex> lock(_m);
     if (_socketToState[sockfd]->oneExited) {
         if (!_socketToState[sockfd]->destructorClosed){
             close(sockfd); // if the destructor closed the socket, we don't. 
@@ -169,7 +171,8 @@ void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
         _socketToState[sockfd]->oneExited = true;
         /* wake up the sender */
         _socketToState[sockfd]->outboundMessages.notifyingPush("");
-        VLOG_F(LOG_PRIORITY, "receiver: will let sender cleanup socket %d", sockfd);
+        VLOG_F(LOG_PRIORITY, 
+               "receiver: will let sender cleanup socket %d", sockfd);
     }
 }
 
@@ -180,7 +183,8 @@ void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
  */
 void Messenger::sendMessagesTask(int sockfd) {
     _m.lock();
-    BlockingQueue<std::string>& outBoundMessages = _socketToState[sockfd]->outboundMessages;
+    BlockingQueue<std::string>& outBoundMessages = 
+        _socketToState[sockfd]->outboundMessages;
     _m.unlock(); /* todo: confirm that this is sufficient to avoid issues
                     when the map resizes and copies are performed. the map 
                     stores pointers, so I think it should be fine. */
@@ -223,7 +227,8 @@ void Messenger::sendMessagesTask(int sockfd) {
         VLOG_F(LOG_PRIORITY, "sender: cleaned up socket %d", sockfd);
     } else {
         _socketToState[sockfd]->oneExited = true;
-        VLOG_F(LOG_PRIORITY, "sender: will let receiver cleanup socket %d", sockfd);
+        VLOG_F(LOG_PRIORITY, 
+               "sender: will let receiver cleanup socket %d", sockfd);
     }
 }
 
@@ -303,27 +308,27 @@ bool Messenger::Request::sendResponse(std::string message) {
  * Return a request message if one becomes available in the specified duration, 
  * in milliseconds. 
  *
- * A negative timeout indicates an indefinite timeout.
+ * A negative timeout indicates an indefinite wait duration.  
  */
-std::optional<Messenger::Request> Messenger::getNextRequest(int timeoutDurationMs) {
-    if (timeoutDurationMs < 0) {
+std::optional<Messenger::Request> Messenger::getNextRequest(int timeoutMs) {
+    if (timeoutMs < 0) {
         return _requestQueue.waitingPop();
     }
-    return _requestQueue.waitingPop_timed(timeoutDurationMs);
+    return _requestQueue.waitingPop_timed(timeoutMs);
 }
 
 
 /** 
- * Return a response message if one becomes available in the specified duration, 
+ * Return a response message if one becomes available in the specified duration,
  * in milliseconds. 
  *
- * A negative timeout indicates an indefinite timeout.
+ * A negative timeout indicates an indefinite wait duration. 
  */
-std::optional<std::string> Messenger::getNextResponse(int timeoutDurationMs) {
-    if (timeoutDurationMs < 0) {
+std::optional<std::string> Messenger::getNextResponse(int timeoutMs) {
+    if (timeoutMs < 0) {
         return _responseQueue.waitingPop();
     }
-    return _responseQueue.waitingPop_timed(timeoutDurationMs);
+    return _responseQueue.waitingPop_timed(timeoutMs);
 }
 
 
@@ -331,6 +336,8 @@ std::optional<std::string> Messenger::getNextResponse(int timeoutDurationMs) {
  * Create a listening socket on the designated port (in host-byte order). 
  *
  * Returns the created socket. 
+ *
+ * A MessengerException is thrown if the socket cannot be created. 
  */
 int createListeningSocket(int port) {
     sockaddr_in addr;
@@ -342,31 +349,32 @@ int createListeningSocket(int port) {
     int listenfd;
     if((listenfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         VLOG_F(LOG_PRIORITY, "%s", strerror(errno));
-        throw MessengerException("Messenger: fatal error: 'socket()' failed");
+        throw MessengerException("fatal error: 'socket()' failed");
     } 
-    // to prevent 'bind() failed: address already in use' errors on restarting
+    /* 'SO_REUSEADDR' prevents 'bind() failed: address already in use' 
+        errors when restarting */
     int enable = 1;
     if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR,
                    &enable, sizeof(int)) < 0) {
         VLOG_F(LOG_PRIORITY, "%s", strerror(errno));
-        throw MessengerException("Messenger: fatal error: 'setsockopt()' failed");
+        throw MessengerException("fatal error: 'setsockopt()' failed");
     }
     if (bind(listenfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         VLOG_F(LOG_PRIORITY, "%s", strerror(errno));
-        throw MessengerException("Messenger: fatal error: 'bind()' failed");
+        throw MessengerException("fatal error: 'bind()' failed");
     }
     int MAX_BACKLOG_CONNECTIONS = 20;
     if (listen(listenfd, MAX_BACKLOG_CONNECTIONS) < 0) {
         VLOG_F(LOG_PRIORITY, "%s", strerror(errno)); 
-        throw MessengerException("Messenger: fatal error: 'listen()' failed");
+        throw MessengerException("fatal error: 'listen()' failed");
     }
     return listenfd;
 }
 
 /**
  * Create a socket connection to the designated peer address. 
- * The string is expected to look like "<IP>:<port>", where the port is in 
- * IPv4 decimal notation. A valid example input is "127.0.0.95:8000". 
+ * The string input must be of the form "<IP>:<port>", where the port is in 
+ * IPv4 decimal notation. A valid example input is: "127.0.0.95:8000". 
  *
  * Returns the socket fd on success, or -1 on failure. 
  */
