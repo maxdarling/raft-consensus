@@ -1,6 +1,7 @@
 #include "Client.h"
 #include <iostream>
 
+/* Yo, it's three thousand thirty. */
 const int CLIENT_PORT = 3030;
 
 void run_shell(RaftClient &c);
@@ -20,7 +21,6 @@ int main(int argc, char* argv[]) {
     catch (...) {
         std::cout << "General exception: fatal error" << std::endl;
     }
-    
 
     return 0;
 }

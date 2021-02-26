@@ -1,13 +1,22 @@
-#include "loguru/loguru.hpp"
 #include "TimedCallback.h"
-#include <random>   // for random_device
+#include "loguru/loguru.hpp"
+#include <random> 
 #include <thread>
 
+/* loguru priority */
 const int LOG_PRIORITY = 3;
 
+/**
+ * Construct a TimedCallback function f that will be executed 'duration_ms'
+ * milliseconds after it has been started.
+ */
 TimedCallback::TimedCallback(int duration_ms, std::function<void()> f)
   : cb(f), lower_bound(duration_ms), upper_bound(duration_ms) {}
 
+/**
+ * Here, f will be executed after a random duration within the specified 
+ * interval.
+ */
 TimedCallback::TimedCallback(int duration_ms_lower_bound, 
     int duration_ms_upper_bound, std::function<void()> f)
   : cb(f), 
@@ -18,6 +27,10 @@ TimedCallback::TimedCallback(int duration_ms_lower_bound,
     srand(rd());
 }
 
+/**
+ * Start the timer for callback execution. If a timer is already running when
+ * this function is called, it will be restarted before executing the callback.
+ */
 void TimedCallback::start() {
     std::lock_guard<std::mutex> l(m);
 
@@ -66,6 +79,10 @@ void TimedCallback::start() {
     }).detach();
 }
 
+/**
+ * Stop the callback timer. If the timer has not been started, this function
+ * will have no effect.
+ */
 void TimedCallback::stop()
 {
     std::lock_guard<std::mutex> l(m);

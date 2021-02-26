@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <cstdio>
 
+/* Width of each line in the table file, in bytes. */
 const int TABLE_ENTRY_WIDTH = 5;
 
 /**
@@ -26,21 +27,26 @@ class Log {
     void recover(int _offset = 0);
     void trunc(int new_size);
     void append(const T &entry);
+    /* Return the number of entries stored in the log. */
     int size() const { return log_cache.size() + offset; }
+    /* Returns true if there are no entries stored in the log. */
     bool empty() const { return size() == 0; }
 
     T operator[](int i); // 1-INDEXED
 
   private:
-    // File to which the log entries are stored, one entry per line.
+    /* File to which the log entries are stored, one entry per line. */
     std::string log_file;
-    // Each line of this file is the byte length of the corresponding line in
-    // log_file. The lines in table_file are of a fixed length.
+    /* Each line of this file is the byte length of the corresponding line in
+     * log_file. The lines in table_file are of a fixed length. */
     std::string table_file;
     std::function<std::string(const T&)> serialize_entry;
     std::function<T(std::string)> deserialize_entry;
-
     std::vector<T> log_cache;
+
+    /* The offset is the number of entries that are in the log file but not
+     * loaded into the cache. The first element of the cache is the log entry
+     * at index offset + 1. */
     int offset {0};
 
     size_t log_file_pos(int entry_offset);
@@ -51,7 +57,7 @@ class Log {
  * file. The user should provide a function to serialize an object of type T to
  * a string and a function to deserialize a string that would be returned from
  * the serialize function back into an object of type T. The serialized string
- * of each entry is stored as a line on the file.
+ * of each entry is stored as a line in the log file.
  */
 template <typename T>
 Log<T>::Log(std::string file_name, 
@@ -62,6 +68,9 @@ Log<T>::Log(std::string file_name,
     serialize_entry(_serialize_entry),
     deserialize_entry(_deserialize_entry) {}
 
+/**
+ * Clear resets the log by deleting the cache, log file, and table file.
+ */
 template <typename T>
 void Log<T>::clear()
 {
@@ -115,7 +124,8 @@ void Log<T>::append(const T &entry)
     std::ofstream log_ofs(log_file, std::ios::app | std::ios::binary);
     std::ofstream table_ofs(table_file, std::ios::app | std::ios::binary);
     std::string entry_str = serialize_entry(entry);
-    // TODO(ali): explanation for this
+    // Ensure the serialized string's length can be represented in the table 
+    // file, the lines of which must be at most TABLE_ENTRY_WIDTH bytes wide.
     if (entry_str.size() >= pow(10, TABLE_ENTRY_WIDTH - 1)) {
         throw std::runtime_error("Serialized entry too large for log");
     }
@@ -128,7 +138,7 @@ void Log<T>::append(const T &entry)
 }
 
 /**
- * Returns the entry at index i.
+ * Returns the log entry at index i.
  */
 template <typename T>
 T Log<T>::operator[](int i)
@@ -145,6 +155,11 @@ T Log<T>::operator[](int i)
     return deserialize_entry(entry);
 }
 
+/**
+ * Translates from entry_offset, which is the number of log entries being
+ * skipped, to a byte offset, which is the number of bytes in the log file that
+ * should be skipped in order to skip that many log entry lines.
+ */
 template <typename T>
 size_t Log<T>::log_file_pos(int entry_offset)
 {

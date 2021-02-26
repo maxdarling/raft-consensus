@@ -2,9 +2,7 @@
 #include <iostream>
 
 using std::cout, std::cerr, std::string;
-
 const string test_file = "test_log";
-
 struct LogEntry {
     std::string command;
     int term;
@@ -59,11 +57,18 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
+/**
+ * Serialize a LogEntry object to a string representation.
+ */
 string serialize(const LogEntry &entry)
 {
     return std::to_string(entry.term) + " " + entry.command;
 }
 
+/**
+ * Deserialize the string representation of a LogEntry object back into the
+ * object.
+ */
 LogEntry deserialize(string entry_str)
 {
     size_t delimiter_idx = entry_str.find(" ");

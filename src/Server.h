@@ -1,15 +1,15 @@
-#include "loguru/loguru.hpp"
-#include "RaftRPC.pb.h"
 #include "Messenger.h"
 #include "TimedCallback.h"
 #include "Log.h"
 #include "PersistentStorage.h"
 #include "util.h"
+#include "loguru/loguru.hpp"
+#include "RaftRPC.pb.h"
 #include <queue>
 
 /**  
- * This class implements a RAFT server instance. Each server in a RAFT cluster
- * is disambiguated by its unique server ID.
+ * This class implements a RAFT server instance. See the README and RAFT paper
+ * for details.
  */
 class Server {
   public:
@@ -29,28 +29,34 @@ class Server {
       int term;
     };
 
+    /* Client requests only receive responses from the leader after the
+     * corresponding log entry has been replicated in a majority of the servers
+     * in the cluster. */
     struct PendingRequest {
       Messenger::Request req;
       int log_idx;
       int term;
     };
 
+    /* Keep track of which node this instance last voted for. */
     struct Vote {
       int term_voted;
       int voted_for;
     };
 
-    /* LOG FILE NAME */
+    /* Log file name. */
     std::string log_file;
   
-    /* LOCK AROUND STATE */
+    /* Lock around server state. */
     std::mutex m;
+
+    /* This CV is notified when new log entries are ready to be applied. */
     std::condition_variable new_commits_cv;
 
+    /* See RAFT paper for a description of these state variables. */
     /* PERSISTENT STATE */
     int current_term {0};
     Vote vote {-1, -1};
-    // std::vector<LogEntry> log {{"head", -1}}; // 1-INDEXED
     Log<LogEntry> log;
 
     /* VOLATILE STATE ON ALL SERVERS */
@@ -64,38 +70,47 @@ class Server {
     /* ADDITIONAL STATE */
     int server_no;
     ServerState server_state {FOLLOWER};
+    /* Track which nodes have voted for this instance during an election. */
     std::set<int> votes_received;
+    /* Our best guess of the current RAFT leader to send to clients. */
     int last_observed_leader_no {1};
+    /* Client requests are executed and responded to in order. Hence, a queue. */
     std::queue<PendingRequest> pending_requests;
 
-    // { server number -> net address }
+    /* Maps { server number -> net address }. */
     unordered_map<int, std::string> server_addrs;
-    // name of instance's state recovery file
+    /* Name of this instance's state recovery file. */
     std::string recovery_file;
 
-    /* UTIL */
+    /* UTIL. See the files that implement these classes for descriptions. */
     PersistentStorage persistent_storage;
     Messenger messenger;
     TimedCallback election_timer;
     TimedCallback heartbeat_timer;
 
-    void request_handler(Messenger::Request &req);
-    void response_handler(const RAFTmessage &msg);
-    void process_RAFTmessage(const RAFTmessage &msg);
+    void handler_RAFTmessage(const RAFTmessage &msg, 
+      std::optional<Messenger::Request> req = std::nullopt);
 
-    void handler_AppendEntries(Messenger::Request &req, 
-        const AppendEntries &ae);
-    void handler_AppendEntries_response(const AppendEntries &ae);
+    /* RPC REQUEST HANDLERS */
     void handler_RequestVote(Messenger::Request &req, 
         const RequestVote &rv);
-    void handler_RequestVote_response(const RequestVote &rv);
+    void handler_AppendEntries(Messenger::Request &req, 
+        const AppendEntries &ae);
     void handler_ClientRequest(Messenger::Request &req, 
         const ClientRequest &cr);
 
-    void replicate_log(int peer_no);
+    /* RPC RESPONSE HANDLERS */
+    void handler_RequestVote_response(const RequestVote &rv);
+    void handler_AppendEntries_response(const AppendEntries &ae);
+
+    /* TIMED CALLBACKS */
     void start_election();
     void send_heartbeats();
 
+    /* LOG ENTRY APPLICATION TASK */
     void apply_log_entries_task();
+
+    /* HELPER FUNCTIONS */
+    void replicate_log(int peer_no);
     void broadcast_msg(const RAFTmessage &msg);
 };

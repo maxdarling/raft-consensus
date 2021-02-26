@@ -1,9 +1,9 @@
 #include "Client.h"
 #include "RaftRPC.pb.h"
 #include <iostream>
-#include <thread>   // for sleep_for()
+#include <thread> 
 
-/* in milliseconds */
+/* How long the client should wait before trying another server, in ms. */
 const int REQUEST_TIMEOUT = 3000;
 
 using std::string, std::optional;

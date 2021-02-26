@@ -3,12 +3,14 @@
 #include <condition_variable>
 
 /**
- * This class implements something super cool
+ * The TimedCallback class implements a non-blocking, timed callback function
+ * that can be rescinded before it executes.
  */
 class TimedCallback {
   public:
     TimedCallback(int duration_ms, std::function<void()> f);
-    TimedCallback(int duration_ms_lower_bound, int duration_ms_upper_bound, std::function<void()> f);
+    TimedCallback(int duration_ms_lower_bound, int duration_ms_upper_bound, 
+        std::function<void()> f);
     void start();
     void stop();
     
