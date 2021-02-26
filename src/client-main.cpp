@@ -7,9 +7,6 @@ const int CLIENT_PORT = 3030;
 void run_shell(RaftClient &c);
 
 int main(int argc, char* argv[]) {
-    loguru::init(argc, argv);
-    loguru::add_file("client.log", loguru::Truncate, loguru::Verbosity_MAX);
-
     // run the raft client application 
     try {
         RaftClient c(CLIENT_PORT, DEFAULT_SERVER_FILE_PATH);

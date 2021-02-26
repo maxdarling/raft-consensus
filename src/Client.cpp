@@ -50,7 +50,6 @@ std::string RaftClient::execute_command(std::string cmd) {
             }
         }
         if (!msg_opt) {
-            LOG_F(INFO, "client request timed out: trying new server");
             continue;
         }
 
