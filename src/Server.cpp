@@ -25,13 +25,7 @@ Server::Server(const int _server_no, const string cluster_file, bool restarting)
                     std::bind(&Server::send_heartbeats, this)) 
 {
     if (restarting) {
-        if (!persistent_storage.recover()) {
-            string err_msg = "S" + std::to_string(server_no) 
-                + " could not open recovery file";
-            LOG_F(ERROR, "%s", err_msg.c_str());
-            throw std::runtime_error(err_msg);
-        }
-
+        persistent_storage.recover();
         LOG_F(INFO, "S%d recovering state from file", server_no);
         ServerPersistentState &sps = persistent_storage.state();
         current_term = sps.current_term();

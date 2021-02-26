@@ -6,6 +6,10 @@
 
 #include "Messenger.h"
 
+#include <sys/types.h>          /* See NOTES */
+#include <sys/socket.h>
+#include "loguru/loguru.hpp"
+
 using std::cout;
 using std::endl;
 
@@ -137,9 +141,15 @@ void clientServerTester(int serverNumber) {
 
 int main(int argc, char* argv[])
 {
-    int serverNumber = std::stoi(argv[1]);
+    int a = listen(27, 10);
+    if (a == -1) {
+        VLOG_F(0, "Error: listen() failed");
+        LOG_F(INFO, "Error: listen() failed");
+    }
+    cout << a << endl;
+    //int serverNumber = std::stoi(argv[1]);
     //MessengerTester(serverNumber);
-    clientServerTester(serverNumber);
+    //clientServerTester(serverNumber);
     // {
     //     Messenger m (5001);
     // }

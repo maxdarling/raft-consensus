@@ -24,8 +24,20 @@ int main(int argc, char* argv[]) {
     if (argc >= 3) restarting = strcmp(argv[2], "-r") == 0 || 
                                 strcmp(argv[2], "-R") == 0;
 
-    Server s(serverNumber, DEFAULT_SERVER_FILE_PATH, restarting);
-    s.run();
+    // run the raft server
+    try {
+        Server s(serverNumber, DEFAULT_SERVER_FILE_PATH, restarting);
+        s.run();
+    }
+    catch (MessengerException& me) {
+        std::cout << me.what() << std::endl;
+    }
+    catch (PersistentStorageException& pse) {
+        std::cout << pse.what() << std::endl;
+    }
+    catch (...) {
+        std::cout << "General exception: fatal error" << std::endl;
+    }
 
     return 0;
 }

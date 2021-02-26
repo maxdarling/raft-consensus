@@ -9,8 +9,18 @@ int main(int argc, char* argv[]) {
     loguru::init(argc, argv);
     loguru::add_file("client.log", loguru::Truncate, loguru::Verbosity_MAX);
 
-    RaftClient c(CLIENT_PORT, DEFAULT_SERVER_FILE_PATH);
-    run_shell(c);
+    // run the raft client application 
+    try {
+        RaftClient c(CLIENT_PORT, DEFAULT_SERVER_FILE_PATH);
+        run_shell(c);
+    }
+    catch (MessengerException& me) {
+        std::cout << me.what() << std::endl;
+    }
+    catch (...) {
+        std::cout << "General exception: fatal error" << std::endl;
+    }
+    
 
     return 0;
 }
