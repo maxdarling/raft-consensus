@@ -29,10 +29,10 @@ int main(int argc, char* argv[]) {
         Server s(serverNumber, DEFAULT_SERVER_FILE_PATH, restarting);
         s.run();
     }
-    catch (MessengerException& me) {
+    catch (Messenger::Exception& me) {
         std::cout << me.what() << std::endl;
     }
-    catch (PersistentStorageException& pse) {
+    catch (PersistentStorage::Exception& pse) {
         std::cout << pse.what() << std::endl;
     }
     catch (...) {

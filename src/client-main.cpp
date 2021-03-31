@@ -12,7 +12,7 @@ int main(int argc, char* argv[]) {
         RaftClient c(CLIENT_PORT, DEFAULT_SERVER_FILE_PATH);
         run_shell(c);
     }
-    catch (MessengerException& me) {
+    catch (Messenger::Exception& me) {
         std::cout << me.what() << std::endl;
     }
     catch (...) {

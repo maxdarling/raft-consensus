@@ -1,18 +1,6 @@
 #include "RaftRPC.pb.h"
 #include <fstream>
 
-/* Exception class for persistent storage. */
-class PersistentStorageException : public std::exception {
-    private:
-        std::string _msg;
-    public:
-        PersistentStorageException(const std::string& msg) : _msg(msg) {}
-
-        virtual const char* what() const noexcept override
-        {
-            return _msg.c_str();
-        } 
-};
 
 /**
  * The PersistentStorage class is a wrapper around the ServerPersistentStorage
@@ -31,8 +19,8 @@ class PersistentStorage {
     {
         std::ofstream ofs(storage_file, std::ios::trunc | std::ios::binary);
         if (!ofs || !sps.SerializeToOstream(&ofs)) {
-            throw PersistentStorageException("fatal error: can't write "
-                                             "recovery file");
+            throw PersistentStorage::Exception("PersistentStorage.h: " + 
+                                                std::string(strerror(errno)));
         }
         ofs.close();
     }
@@ -43,8 +31,8 @@ class PersistentStorage {
         std::ifstream ifs(storage_file, std::ios::binary);
         if (!ifs || !sps.ParseFromIstream(&ifs)) {
             // give up if we can't open the recovery file
-            throw PersistentStorageException("fatal error: can't open "
-                                             "recovery file");
+            throw PersistentStorage::Exception("PersistentStorage.h: " + 
+                                                std::string(strerror(errno)));
         }
         ifs.close();
     }
@@ -52,4 +40,20 @@ class PersistentStorage {
   private:
     ServerPersistentState sps;
     std::string storage_file;
+
+
+
+  public: 
+    /* Exception class for persistent storage. */
+    class Exception : public std::exception {
+        private:
+            std::string _msg;
+        public:
+            Exception(const std::string& msg) : _msg(msg) {}
+
+            virtual const char* what() const noexcept override
+            {
+                return _msg.c_str();
+            } 
+    };
 };

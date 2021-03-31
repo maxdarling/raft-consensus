@@ -70,7 +70,7 @@ class Messenger {
             bool destructorClosed = false;
         };
 
-        /* maps each socket to the state shared with its worker threads */
+        /* maps each socket fd to the state shared with its worker threads */
         unordered_map<int, SocketState *> _socketToState;
 
         /* maps peer network addresses to their associated sockets */
@@ -85,18 +85,21 @@ class Messenger {
 
         /* port to listen for requests on (server-only) */
         std::optional<int> _listenSock;
+
+
+  public: 
+    // exception class for messenger exceptions
+    class Exception : public std::exception {
+        private:
+            std::string _msg;
+        public:
+            Exception(const std::string& msg) : _msg(msg){}
+
+            virtual const char* what() const noexcept override
+            {
+                return _msg.c_str();
+            } 
+    };
 };
 
 
-// exception class for messenger exceptions
-class MessengerException : public std::exception {
-    private:
-        std::string _msg;
-    public:
-        MessengerException(const std::string& msg) : _msg(msg){}
-
-        virtual const char* what() const noexcept override
-        {
-            return _msg.c_str();
-        } 
-};

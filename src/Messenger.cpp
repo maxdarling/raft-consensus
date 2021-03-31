@@ -23,8 +23,9 @@ const int LOG_PRIORITY = 4;
 /* convenience methods */
 int createListeningSocket(int port);
 int establishConnection(std::string peerAddr);
-int sendEntireMessage(const int connfd, const void* buf, const int length);
-int readEntireMessage(const int connfd, void* buf, int bytesToRead);
+int sendEntireBlock(const int connfd, const void* buf, const int length);
+int readEntireBlock(const int connfd, void* buf, int bytesToRead);
+std::optional<std::string> readMessageFromSocket(int sockfd);
 
 /** 
  * ~~~~~~ Design Notes ~~~~~~
@@ -139,21 +140,21 @@ void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
     while(true) {
         // read the message length
         int msgLength;
-        int n = readEntireMessage(sockfd, &msgLength, sizeof(msgLength));
+        int n = readEntireBlock(sockfd, &msgLength, sizeof(msgLength));
         if (n != sizeof(msgLength)) break;
 
         // read the message itself
         char msgBuf [msgLength];
-        n = readEntireMessage(sockfd, msgBuf, sizeof(msgBuf));
+        n = readEntireBlock(sockfd, msgBuf, sizeof(msgBuf));
         if (n != msgLength) break;
 
         // place the message in the appropriate queue
         std::string message(msgBuf, sizeof(msgBuf));
         if (shouldReadRequests) { 
             Request request(message, sockfd, steady_clock::now(), *this);
-            _requestQueue.notifyingPush(request);
+            _requestQueue.push(request);
         } else {
-            _responseQueue.notifyingPush(message);
+            _responseQueue.push(message);
         }
     }
 
@@ -170,7 +171,7 @@ void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
     } else {
         _socketToState[sockfd]->oneExited = true;
         /* wake up the sender */
-        _socketToState[sockfd]->outboundMessages.notifyingPush("");
+        _socketToState[sockfd]->outboundMessages.push("");
         VLOG_F(LOG_PRIORITY, 
                "receiver: will let sender cleanup socket %d", sockfd);
     }
@@ -203,13 +204,13 @@ void Messenger::sendMessagesTask(int sockfd) {
 
         // send message length 
         int msgLength = message.length();
-        int n = sendEntireMessage(sockfd, &msgLength, sizeof(msgLength));
+        int n = sendEntireBlock(sockfd, &msgLength, sizeof(msgLength));
         if (n != sizeof(msgLength)) {
             break;
         }
 
         // send message body
-        n = sendEntireMessage(sockfd, message.c_str(), message.length());
+        n = sendEntireBlock(sockfd, message.c_str(), message.length());
         if (n != message.length()) {
             break;
         }
@@ -275,7 +276,7 @@ bool Messenger::sendRequest(std::string peerAddr, std::string message) {
 
 
     // pass the message to the socket's desigated sender 
-    _socketToState[sockfd]->outboundMessages.notifyingPush(message);
+    _socketToState[sockfd]->outboundMessages.push(message);
     return true;
 }
 
@@ -299,7 +300,7 @@ bool Messenger::Request::sendResponse(std::string message) {
 
     // pass the message to the socket's desigated sender 
     _messengerParent.
-        _socketToState[_sockfd]->outboundMessages.notifyingPush(message);
+        _socketToState[_sockfd]->outboundMessages.push(message);
     return true;
 }
 
@@ -337,7 +338,7 @@ std::optional<std::string> Messenger::getNextResponse(int timeoutMs) {
  *
  * Returns the created socket. 
  *
- * A MessengerException is thrown if the socket cannot be created. 
+ * A Messenger::Exception is thrown if the socket cannot be created. 
  */
 int createListeningSocket(int port) {
     sockaddr_in addr;
@@ -349,7 +350,7 @@ int createListeningSocket(int port) {
     int listenfd;
     if((listenfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         VLOG_F(LOG_PRIORITY, "%s", strerror(errno));
-        throw MessengerException("fatal error: 'socket()' failed");
+        throw Messenger::Exception("fatal error: 'socket()' failed");
     } 
     /* 'SO_REUSEADDR' prevents 'bind() failed: address already in use' 
         errors when restarting */
@@ -357,16 +358,16 @@ int createListeningSocket(int port) {
     if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR,
                    &enable, sizeof(int)) < 0) {
         VLOG_F(LOG_PRIORITY, "%s", strerror(errno));
-        throw MessengerException("fatal error: 'setsockopt()' failed");
+        throw Messenger::Exception("fatal error: 'setsockopt()' failed");
     }
     if (bind(listenfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         VLOG_F(LOG_PRIORITY, "%s", strerror(errno));
-        throw MessengerException("fatal error: 'bind()' failed");
+        throw Messenger::Exception("fatal error: 'bind()' failed");
     }
     int MAX_BACKLOG_CONNECTIONS = 20;
     if (listen(listenfd, MAX_BACKLOG_CONNECTIONS) < 0) {
         VLOG_F(LOG_PRIORITY, "%s", strerror(errno)); 
-        throw MessengerException("fatal error: 'listen()' failed");
+        throw Messenger::Exception("fatal error: 'listen()' failed");
     }
     return listenfd;
 }
@@ -400,6 +401,14 @@ int establishConnection(std::string peerAddr) {
         VLOG_F(LOG_PRIORITY, "Error: socket() failed");
         return -1;
     } 
+    int enable = 1;
+    /* 'SO_NOSIGPIPE': don't crash if we attempt to call 'send' on a closed 
+        socket (this is equivalent to send's 'MSG_NOSIGNAL'). */
+    if (setsockopt(connfd, SOL_SOCKET, SO_NOSIGPIPE,
+                   &enable, sizeof(int)) < 0) {
+        VLOG_F(LOG_PRIORITY, "%s", strerror(errno));
+        throw Messenger::Exception("fatal error: 'setsockopt()' failed");
+    }
     if(connect(connfd, (sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         VLOG_F(LOG_PRIORITY, "Error: connect() failed");
         return -1;
@@ -410,13 +419,14 @@ int establishConnection(std::string peerAddr) {
 
 
 /** 
- * Write 'length' bytes to a socket. Returns the number of bytes
- * written, or -1 if there was an error.
+ * Writes an entire "block" of 'length' bytes to a socket, blocking until all
+ * bytes are read. Returns the number of bytes written, or -1 if there was an
+ * error.
  */
-int sendEntireMessage(const int connfd, const void* buf, const int length) { 
+int sendEntireBlock(const int connfd, const void* buf, const int length) { 
     int bytesWritten = 0;
     while (bytesWritten < length) {
-        // 'MSG_NOSIGNAL': disable sigpipe in case write fails
+        // 'MSG_NOSIGNAL': disable sigpipe in case write fails (absent in macOS)
         int n = send(connfd, (char *)buf + bytesWritten, 
                      length - bytesWritten, MSG_NOSIGNAL);
         if (n < 0) {
@@ -429,14 +439,15 @@ int sendEntireMessage(const int connfd, const void* buf, const int length) {
 
 
 /** 
- * Read 'bytesToRead' bytes from a socket. Returns the number of bytes
- * read, or -1 if there was an error.
+ * Reads and entire 'bytesToRead' sized "block" from a socket, blocking until
+ * all bytes are read. Returns the number of bytes read, or -1 if there was an
+ * error.
  */
-int readEntireMessage(const int connfd, void* buf, int bytesToRead) {
+int readEntireBlock(const int sockfd, void* buf, int bytesToRead) {
     int bytesRead = 0;
     while (bytesRead < bytesToRead) {
         // 'MSG_NOSIGNAL': disable sigpipe in case write fails
-        int n = recv(connfd, (char *)buf + bytesRead, 
+        int n = recv(sockfd, (char *)buf + bytesRead,  // todo: can replace looping with 'MSG_WAITALL'
                      bytesToRead - bytesRead, MSG_NOSIGNAL);
         // orderly shutdown, or an error ocurred
         if (n == 0 || n < 0) {
@@ -445,4 +456,28 @@ int readEntireMessage(const int connfd, void* buf, int bytesToRead) {
         bytesRead += n;
     }
     return bytesRead;
+}
+
+
+/** 
+ * Read the next ready message on a socket, blocking until one is ready. 
+ * 
+ * Optionally returns the message, or a null option if there was an error. 
+ */
+std::optional<std::string> readMessageFromSocket(int sockfd) {
+    // step 1: read length
+    int msgLength;
+    int n = recv(sockfd, (char *)&msgLength, sizeof(msgLength), MSG_WAITALL);
+    if (n < 0 || n < sizeof(msgLength)) {
+        return std::nullopt;
+    }
+
+    // step 2: read message
+    char msgBuf [msgLength];
+    n = recv(sockfd, msgBuf, sizeof(msgBuf), MSG_WAITALL);
+    if (n < 0 || n < sizeof(msgBuf)) {
+        return std::nullopt;
+    }
+
+    return std::string(msgBuf, msgLength);
 }

@@ -141,14 +141,8 @@ void clientServerTester(int serverNumber) {
 
 int main(int argc, char* argv[])
 {
-    int a = listen(27, 10);
-    if (a == -1) {
-        VLOG_F(0, "Error: listen() failed");
-        LOG_F(INFO, "Error: listen() failed");
-    }
-    cout << a << endl;
-    //int serverNumber = std::stoi(argv[1]);
-    //MessengerTester(serverNumber);
+    int serverNumber = std::stoi(argv[1]);
+    MessengerTester(serverNumber);
     //clientServerTester(serverNumber);
     // {
     //     Messenger m (5001);
