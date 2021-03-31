@@ -23,9 +23,8 @@ const int LOG_PRIORITY = 4;
 /* convenience methods */
 int createListeningSocket(int port);
 int establishConnection(std::string peerAddr);
-int sendEntireBlock(const int connfd, const void* buf, const int length);
-int readEntireBlock(const int connfd, void* buf, int bytesToRead);
 std::optional<std::string> readMessageFromSocket(int sockfd);
+bool sendMessageOnSocket(int sockfd, const std::string& msg);
 
 /** 
  * ~~~~~~ Design Notes ~~~~~~
@@ -138,23 +137,14 @@ void Messenger::listener() {
  */
 void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
     while(true) {
-        // read the message length
-        int msgLength;
-        int n = readEntireBlock(sockfd, &msgLength, sizeof(msgLength));
-        if (n != sizeof(msgLength)) break;
+        std::optional<std::string> msgOpt = readMessageFromSocket(sockfd);
+        if (!msgOpt) break;
 
-        // read the message itself
-        char msgBuf [msgLength];
-        n = readEntireBlock(sockfd, msgBuf, sizeof(msgBuf));
-        if (n != msgLength) break;
-
-        // place the message in the appropriate queue
-        std::string message(msgBuf, sizeof(msgBuf));
         if (shouldReadRequests) { 
-            Request request(message, sockfd, steady_clock::now(), *this);
+            Request request(*msgOpt, sockfd, steady_clock::now(), *this);
             _requestQueue.push(request);
         } else {
-            _responseQueue.push(message);
+            _responseQueue.push(*msgOpt);
         }
     }
 
@@ -202,16 +192,7 @@ void Messenger::sendMessagesTask(int sockfd) {
             }
         }
 
-        // send message length 
-        int msgLength = message.length();
-        int n = sendEntireBlock(sockfd, &msgLength, sizeof(msgLength));
-        if (n != sizeof(msgLength)) {
-            break;
-        }
-
-        // send message body
-        n = sendEntireBlock(sockfd, message.c_str(), message.length());
-        if (n != message.length()) {
+        if (!sendMessageOnSocket(sockfd, message)) {
             break;
         }
     }
@@ -419,48 +400,31 @@ int establishConnection(std::string peerAddr) {
 
 
 /** 
- * Writes an entire "block" of 'length' bytes to a socket, blocking until all
- * bytes are read. Returns the number of bytes written, or -1 if there was an
- * error.
+ * Send a length delimited message on the specified socket, blocking until all 
+ * bytes have been sent. 
+ * 
+ * Returns true if the message was sent successfully, or false otherwise. 
  */
-int sendEntireBlock(const int connfd, const void* buf, const int length) { 
-    int bytesWritten = 0;
-    while (bytesWritten < length) {
-        // 'MSG_NOSIGNAL': disable sigpipe in case write fails (absent in macOS)
-        int n = send(connfd, (char *)buf + bytesWritten, 
-                     length - bytesWritten, MSG_NOSIGNAL);
-        if (n < 0) {
-            return -1; 
-        }
-        bytesWritten += n;
+bool sendMessageOnSocket(int sockfd, const std::string& msg) {
+    // send length
+    int msgLength = msg.size();
+    int n = send(sockfd, (char *)&msgLength, sizeof(msgLength), 0);
+    if (n < 0 || n < sizeof(msgLength)) {
+        return false;
     }
-    return bytesWritten;
+
+    // send message
+    n = send(sockfd, msg.c_str(), msg.size(), 0);
+    if (n < 0 || n < msg.size()) {
+        return false;
+    }
+    return true;
 }
 
 
 /** 
- * Reads and entire 'bytesToRead' sized "block" from a socket, blocking until
- * all bytes are read. Returns the number of bytes read, or -1 if there was an
- * error.
- */
-int readEntireBlock(const int sockfd, void* buf, int bytesToRead) {
-    int bytesRead = 0;
-    while (bytesRead < bytesToRead) {
-        // 'MSG_NOSIGNAL': disable sigpipe in case write fails
-        int n = recv(sockfd, (char *)buf + bytesRead,  // todo: can replace looping with 'MSG_WAITALL'
-                     bytesToRead - bytesRead, MSG_NOSIGNAL);
-        // orderly shutdown, or an error ocurred
-        if (n == 0 || n < 0) {
-            return -1; 
-        }
-        bytesRead += n;
-    }
-    return bytesRead;
-}
-
-
-/** 
- * Read the next ready message on a socket, blocking until one is ready. 
+ * Read the next length-delmited message on a socket, blocking until one is
+ * ready.
  * 
  * Optionally returns the message, or a null option if there was an error. 
  */
