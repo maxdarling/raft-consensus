@@ -273,7 +273,8 @@ bool Messenger::sendRequest(std::string peerAddr, std::string message) {
  */
 bool Messenger::Request::sendResponse(std::string message) {
     std::lock_guard<std::mutex> lock(_messengerParent._m);
-    if (_messengerParent._socketToState[_sockfd]->timeCreated > _timestamp) {
+    if (!_messengerParent._socketToState.count(_sockfd) || 
+        _messengerParent._socketToState[_sockfd]->timeCreated > _timestamp) {
         VLOG_F(LOG_PRIORITY, "sendResponse: can't respond, connection to "
             "requester was closed");
         return false;
