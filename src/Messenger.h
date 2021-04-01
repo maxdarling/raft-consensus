@@ -28,7 +28,7 @@ class Messenger {
            itself and a means to respond with 'sendResponse()' */
         struct Request {
             std::string message;
-            bool sendResponse(std::string responseMessage);
+            void sendResponse(std::string responseMessage);
 
             private:
                 Request(std::string m, int sock, time_point<steady_clock> ts, 
@@ -40,7 +40,7 @@ class Messenger {
             friend class Messenger;
         };
         
-        bool sendRequest(std::string peerAddr, std::string message); 
+        void sendRequest(std::string peerAddr, std::string message); 
         std::optional<Request> getNextRequest(int timeoutMs = -1);
         std::optional<std::string> getNextResponse(int timeoutMs = -1); 
 

@@ -132,15 +132,19 @@ void Messenger::listener() {
  * Receiver worker task. Continually reads messages and places them in the 
  * appropriate queue. 
  *
- * 'shouldReadRequests' indicates whether the worker will parse incoming 
- * requests or responses. 
+ * 'requestsNotResponses' - true if requests should be processed, false if 
+ *                          reponses should be processed. 
  */
-void Messenger::receiveMessagesTask(int sockfd, bool shouldReadRequests) {
+void Messenger::receiveMessagesTask(int sockfd, bool requestsNotResponses) {
     while(true) {
         std::optional<std::string> msgOpt = readMessageFromSocket(sockfd);
         if (!msgOpt) break;
 
-        if (shouldReadRequests) { 
+        // todo: this is a bit ugly. a function pointer method might be 
+        // superior. or passing pointers to the queues. 
+        // additionally, perhaps two seperate funcs could be made (we'd want
+        // to decompose the cleanup logic into a method in that case, though) 
+        if (requestsNotResponses) { 
             Request request(*msgOpt, sockfd, steady_clock::now(), *this);
             _requestQueue.push(request);
         } else {
@@ -216,18 +220,13 @@ void Messenger::sendMessagesTask(int sockfd) {
 
 
 /**
- * Send a request message to the designated address. 
+ * Send a request message to the designated address. The message is sent on a 
+ * "best-effort" basis, as we cannot make guarantees about the network or peer.
  * 
  * 'peerAddr': "<a valid IPv4 dotted address>:<port>"
  *                example: "127.0.0.95:8000" 
- * 
- * Returns true if the message was sent via "best-effort", or false if there was
- * an issue during connection.  
- * 
- * If there is not an existing connection to the peer, one will be made. 
- * If sending a message fails, the connection socket is closed. 
  */
-bool Messenger::sendRequest(std::string peerAddr, std::string message) { 
+void Messenger::sendRequest(std::string peerAddr, std::string message) { 
     int sockfd;
     std::lock_guard<std::mutex> lock(_m);
     // make a connection if it's the first time sending to this address
@@ -235,7 +234,7 @@ bool Messenger::sendRequest(std::string peerAddr, std::string message) {
         sockfd = establishConnection(peerAddr);
         if (sockfd == -1) {
             VLOG_F(LOG_PRIORITY, "connection failed to %s", peerAddr.c_str());
-            return false;
+            return; 
         }
         VLOG_F(LOG_PRIORITY, "connection established with %s", peerAddr.c_str());
         _peerAddrToSocket[peerAddr] = sockfd;
@@ -258,32 +257,27 @@ bool Messenger::sendRequest(std::string peerAddr, std::string message) {
 
     // pass the message to the socket's desigated sender 
     _socketToState[sockfd]->outboundMessages.push(message);
-    return true;
 }
 
 
 /**
- * Send a response to the peer who's request you've received. 
+ * Send a response to a peer's request. Sent on a "best-effort" basis. 
  *
  * Multiple responses can be sent using the same request object, as long as the
  * network connection hasn't been closed since the time of request receipt.
- * 
- * Return true if the message was sent via "best-effort", or false if the 
- * network connection was closed. 
  */
-bool Messenger::Request::sendResponse(std::string message) {
+void Messenger::Request::sendResponse(std::string message) {
     std::lock_guard<std::mutex> lock(_messengerParent._m);
     if (!_messengerParent._socketToState.count(_sockfd) || 
         _messengerParent._socketToState[_sockfd]->timeCreated > _timestamp) {
         VLOG_F(LOG_PRIORITY, "sendResponse: can't respond, connection to "
             "requester was closed");
-        return false;
+        return;
     }
 
     // pass the message to the socket's desigated sender 
     _messengerParent.
         _socketToState[_sockfd]->outboundMessages.push(message);
-    return true;
 }
 
 
@@ -372,8 +366,7 @@ int establishConnection(std::string peerAddr) {
     memset(&serv_addr, '0', sizeof(serv_addr));
     serv_addr.sin_family = AF_INET; // use IPv4
     serv_addr.sin_port = htons(port);
-    serv_addr.sin_addr.s_addr = inet_addr(IPstr.c_str()); // translate str IP
-    if (serv_addr.sin_addr.s_addr == INADDR_NONE) {
+    if (0 == inet_aton(IPstr.c_str(), &serv_addr.sin_addr)) {
         VLOG_F(LOG_PRIORITY, "bad address.");
         return -1;
     }
