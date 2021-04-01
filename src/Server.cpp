@@ -427,6 +427,7 @@ void Server::apply_log_entries_task()
         }
 
         LOG_F(INFO, "S%d applying cmd: %s", server_no, cmd.c_str());
+        /* Begin state machine 'apply' logic */
         string bash_cmd = "bash -c \"" + cmd + "\"";
         std::unique_ptr<FILE, decltype(&pclose)> pipe(
             popen(bash_cmd.c_str(), "r"), pclose
@@ -442,6 +443,7 @@ void Server::apply_log_entries_task()
                 result += buf.data();
             }
         }
+        /* End state machine 'apply' logic */
 
         m.lock();
         if (server_state == LEADER) {
