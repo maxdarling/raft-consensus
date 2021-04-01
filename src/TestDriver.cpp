@@ -29,6 +29,7 @@ const int PORT_BASE = 5000;
 
 
 
+/* server numbers: 1 or 2 */
 void MessengerTester(int serverNumber) {
     // start Messenger
     int myPort = PORT_BASE + serverNumber;
@@ -38,8 +39,6 @@ void MessengerTester(int serverNumber) {
     cout << "Server #" << serverNumber << " of " << nServers << " has started" << endl;
 
     // send messages
-    int n_requests_sent = 0;
-    int n_responses_sent = 0;
     while(true) {
         // pick a random server to send a message to
         int peerServerNumber; 
@@ -48,9 +47,7 @@ void MessengerTester(int serverNumber) {
         std::string peerHostAndPort = "0:" + std::to_string(PORT_BASE + peerServerNumber);
         
         // construct a message
-        std::string requestMessage = "\n\n~~~~~~Message #" + std::to_string(++n_requests_sent) + 
-                              " from server #" + std::to_string(serverNumber) + "~~~~~~~\n\n";
- 
+        std::string requestMessage = "this is a request\n";
 
         // get any responses
         std::optional<std::string> responseOpt = messenger.getNextResponse(100);
@@ -70,84 +67,49 @@ void MessengerTester(int serverNumber) {
             cout << "Request received:" << endl;
             cout << (requestOpt->message) << endl; 
             // try to send a response, too!
-            std::string responseMsg = "\n\n~~~~~~Response #" + std::to_string(++n_responses_sent) + 
-                                " from server #" + std::to_string(serverNumber) + "~~~~~~~\n\n";
-            //messenger.sendResponse(requestOpt->responseToken, responseMsg);
+            std::string responseMsg = "this is a reponse\n";
             requestOpt->sendResponse(responseMsg);
         } else {
             cout << "No request message received in time" << endl;
         }
     
-        sleep(5);
+        sleep(3);
     }
 }
 
 
-// server #1 is client, server#2 is server
-void clientServerTester(int serverNumber) {
+/* one sender (client), one receiver. sender is 1, receiver is 2 */
+void MessengerTester2(int serverNumber) {
     if (serverNumber == 1) {
-        // client logic
-        Messenger clientMessenger;
-        std::string peerHostAndPort = "0:5002";
-        int n_requests_sent = 0;
+        Messenger messenger;
         while(true) {
-            // send a request
-            std::string requestMessage = "\n\n~~~~~~Message #" + std::to_string(++n_requests_sent) + 
-                                " from server #" + std::to_string(serverNumber) + "~~~~~~~\n\n";
-
-            clientMessenger.sendRequest(peerHostAndPort, requestMessage);
-            //clientMessenger.sendResponse({}, "fake baby"); // test invalid client operation
-
-            // wait for a response
-            std::optional<std::string> responseOpt = clientMessenger.getNextResponse(100); // for now, 100 does nothing. 
-            if (responseOpt) {
-                cout << "Response received: " << endl;
-                cout << *responseOpt << endl;
-            } else {
-                cout << "No response message arrived in time" << endl;
-            }
-
-            sleep(5);
+            // send message to receiver
+            messenger.sendRequest("0:5002", "~This is a message~\n");
+            sleep(3);
         }
-    } 
-    else {
-        // server logic
-        int myPort = PORT_BASE + serverNumber;
-        Messenger serverMessenger(myPort);
-
-        int n_responses_sent = 0;
+    }
+    else if (serverNumber == 2) {
+        Messenger messenger(5002);
         while(true) {
-            // sit around for a request
-            std::optional<Messenger::Request> requestOpt = serverMessenger.getNextRequest(100); // 100 does nothing
-            if (requestOpt) {
-                cout << "Request received: " << endl;
-                cout << requestOpt->message << endl;
-
-                //send a response  
-                std::string responseMsg = "\n\n~~~~~~Response #" + std::to_string(++n_responses_sent) + 
-                                    " from server #" + std::to_string(serverNumber) + "~~~~~~~\n\n";
-                //serverMessenger.sendResponse(requestOpt->responseToken, responseMsg);
-                requestOpt->sendResponse(responseMsg); // clean!?!?
-
+            // receive message from sender
+            std::optional<Messenger::Request> reqOpt = messenger.getNextRequest(100);
+            if (!reqOpt) {
+                cout << "No message received in time " << endl;
             } else {
-                cout << "No request message arrived in time" << endl;
+                cout << "Message recieved: " << reqOpt.value().message;
             }
 
-            sleep(5);
-        } 
+            sleep(3);
+        }
     }
-
 }
+
 
 int main(int argc, char* argv[])
 {
     int serverNumber = std::stoi(argv[1]);
     MessengerTester(serverNumber);
-    //clientServerTester(serverNumber);
-    // {
-    //     Messenger m (5001);
-    // }
+    //MessengerTester2(serverNumber);
 
-    sleep(2);
     return 0;
 }
