@@ -8,7 +8,7 @@
  */
 class RaftClient {
   public:
-    RaftClient(int client_port, const std::string cluster_file);
+    RaftClient(const std::string cluster_file);
     std::string execute_command(std::string command);
     
   private:

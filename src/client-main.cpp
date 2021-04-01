@@ -1,15 +1,12 @@
 #include "Client.h"
 #include <iostream>
 
-/* Yo, it's three thousand thirty. */
-const int CLIENT_PORT = 3030;
-
 void run_shell(RaftClient &c);
 
 int main(int argc, char* argv[]) {
     // run the raft client application 
     try {
-        RaftClient c(CLIENT_PORT, DEFAULT_SERVER_FILE_PATH);
+        RaftClient c(DEFAULT_SERVER_FILE_PATH);
         run_shell(c);
     }
     catch (Messenger::Exception& me) {

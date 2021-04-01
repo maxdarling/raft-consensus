@@ -12,9 +12,8 @@ using std::string, std::optional;
  * Construct a client instance at the given address to be serviced by the
  * given cluster.
  */
-RaftClient::RaftClient(int client_port, const std::string cluster_file)
-  : messenger(client_port),
-    server_addrs(parseClusterInfo(cluster_file)) {}
+RaftClient::RaftClient(const std::string cluster_file)
+  : server_addrs(parseClusterInfo(cluster_file)) {}
 
 /**
  * Send a BASH cmd string to be run on the RAFT cluster, await a response, 
@@ -33,24 +32,15 @@ std::string RaftClient::execute_command(std::string cmd) {
     ClientRequest cr_response;
     // rate limit retries so we don't exhaust all open files in system
     for (; !cr_response.success(); std::this_thread::sleep_for(2s)) {
-        // cycle through servers until we find one that's not down
-        while (!messenger.sendRequest(server_addrs[leader_no],
-            serialized_request)) {
+        // send a request to the presumed leader
+        messenger.sendRequest(server_addrs[leader_no], serialized_request);
+
+        // wait for a response
+        optional<string> msg_opt = messenger.getNextResponse(REQUEST_TIMEOUT);
+        if (!msg_opt) {
+            // if no response, try a new server
             leader_no = (leader_no + 1) % server_addrs.size();
             if (leader_no == 0) leader_no++;
-        }
-
-        optional<string> msg_opt;
-        while (!msg_opt) {
-            msg_opt = messenger.getNextResponse(REQUEST_TIMEOUT);
-            // check to see if the server is down by sending empty msg
-            if (!msg_opt && 
-                !messenger.sendRequest(server_addrs[leader_no], "")) {
-                break;
-            }
-        }
-        if (!msg_opt) {
-            continue;
         }
 
         RAFTmessage msg;
