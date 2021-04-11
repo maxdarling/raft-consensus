@@ -6,7 +6,7 @@ using std::string;
 /**
  * A state machine for executing command-line commands.
  */
-class ShellCmdStateMachine : StateMachine {
+class ShellCmdStateMachine : public StateMachine {
   public: 
     
     /**

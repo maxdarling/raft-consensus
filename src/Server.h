@@ -5,6 +5,7 @@
 #include "util.h"
 #include "loguru/loguru.hpp"
 #include "RaftRPC.pb.h"
+#include "StateMachines/StateMachine.h"
 #include <queue>
 
 /**  
@@ -14,7 +15,7 @@
 class Server {
   public:
     Server(const int _server_no, const std::string cluster_file, 
-      bool restarting);
+      StateMachine *state_machine, bool restarting);
     void run();
 
   private:
@@ -43,6 +44,9 @@ class Server {
       int term_voted;
       int voted_for;
     };
+
+    /* State machine instance */
+    StateMachine *state_machine;
 
     /* Log file name. */
     std::string log_file;

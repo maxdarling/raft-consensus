@@ -20,8 +20,10 @@ using std::optional, std::string, std::lock_guard, std::mutex;
  * disk. If a recovery file is missing or corrupted, an error will be thrown.
  * If the cluster file is missing or corrupted, an error will be thrown.
  */
-Server::Server(const int _server_no, const string cluster_file, bool restarting)
-  : log_file("log" + std::to_string(_server_no)),
+Server::Server(const int _server_no, const string cluster_file, 
+               StateMachine *_state_machine, bool restarting)
+  : state_machine(_state_machine), 
+    log_file("log" + std::to_string(_server_no)),
     log(log_file, 
         /* serialize LogEntry to string */
         [](const LogEntry &entry) {
@@ -427,23 +429,7 @@ void Server::apply_log_entries_task()
         }
 
         LOG_F(INFO, "S%d applying cmd: %s", server_no, cmd.c_str());
-        /* Begin state machine 'apply' logic */
-        string bash_cmd = "bash -c \"" + cmd + "\"";
-        std::unique_ptr<FILE, decltype(&pclose)> pipe(
-            popen(bash_cmd.c_str(), "r"), pclose
-        );
-        string result;
-        std::array<char, 128> buf;
-        if (!pipe) {
-            LOG_F(ERROR, "S%d: popen() failed!", server_no);
-            result = "ERROR: popen() failed";
-        }
-        else {
-            while (fgets(buf.data(), buf.size(), pipe.get()) != nullptr) {
-                result += buf.data();
-            }
-        }
-        /* End state machine 'apply' logic */
+        string result = state_machine->apply(cmd);
 
         m.lock();
         if (server_state == LEADER) {

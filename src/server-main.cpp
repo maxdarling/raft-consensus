@@ -1,3 +1,4 @@
+#include "StateMachines/ShellCommandStateMachine.h"
 #include "Server.h"
 #include <iostream>
 
@@ -24,9 +25,13 @@ int main(int argc, char* argv[]) {
     if (argc >= 3) restarting = strcmp(argv[2], "-r") == 0 || 
                                 strcmp(argv[2], "-R") == 0;
 
+    
+    // current: command-line state machine
+    ShellCmdStateMachine sm;
+
     // run the raft server
     try {
-        Server s(serverNumber, DEFAULT_SERVER_FILE_PATH, restarting);
+        Server s(serverNumber, DEFAULT_SERVER_FILE_PATH, &sm, restarting);
         s.run();
     }
     catch (Messenger::Exception& me) {

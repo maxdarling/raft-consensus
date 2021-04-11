@@ -1,3 +1,5 @@
+#ifndef STATEMACHINE_H
+#define STATEMACHINE_H
 #include <string> 
 
 /** 
@@ -13,3 +15,4 @@ class StateMachine {
   public: 
     virtual std::string apply(std::string command) = 0;
 };
+#endif /* !STATEMACHINE_H */
