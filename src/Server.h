@@ -1,58 +1,120 @@
 #include "Messenger.h"
+#include "TimedCallback.h"
+#include "Log.h"
+#include "PersistentStorage.h"
 #include "util.h"
+#include "loguru/loguru.hpp"
 #include "RaftRPC.pb.h"
+#include "StateMachines/StateMachine.h"
+#include <queue>
 
-/**
- * This class implements a RAFT server instance. Each server in a RAFT cluster
- * is disambiguated by its unique server ID.
+/**  
+ * This class implements a RAFT server instance. See the README and RAFT paper
+ * for details.
  */
 class Server {
   public:
-    Server(const int server_id, 
-        const unordered_map<int, struct sockaddr_in>& cluster_list);
+    Server(const int _server_no, const std::string cluster_file, 
+      StateMachine *state_machine, bool restarting);
     void run();
 
   private:
-    /* To track our most recent leader election vote. */
+    enum ServerState {
+      FOLLOWER,
+      CANDIDATE,
+      LEADER
+    };
+
+    struct LogEntry {
+      std::string command;
+      int term;
+    };
+
+    /* Client requests only receive responses from the leader after the
+     * corresponding log entry has been replicated in a majority of the servers
+     * in the cluster. */
+    struct PendingRequest {
+      Messenger::Request req;
+      int log_idx;
+      int term;
+    };
+
+    /* Keep track of which node this instance last voted for. */
     struct Vote {
       int term_voted;
       int voted_for;
     };
 
+    /* State machine instance */
+    StateMachine *state_machine;
+
+    /* Log file name. */
+    std::string log_file;
+  
+    /* Lock around server state. */
+    std::mutex m;
+
+    /* This CV is notified when new log entries are ready to be applied. */
+    std::condition_variable new_commits_cv;
+
+    /* See RAFT paper for a description of these state variables. */
     /* PERSISTENT STATE */
-    int _current_term {0};
-    std::optional<Vote> _vote;
+    int current_term {0};
+    Vote vote {-1, -1};
+    Log<LogEntry> log;
 
     /* VOLATILE STATE ON ALL SERVERS */
-    int _commit_index {0};
-    int _last_applied {0};
+    int commit_index {0};
+    int last_applied {0};
 
     /* VOLATILE STATE ON LEADERS */
-    std::vector<int> _next_index;
-    std::vector<int> _match_index;
+    std::vector<int> next_index;
+    std::vector<int> match_index;
 
     /* ADDITIONAL STATE */
-    int _server_id;
-    bool _leader {false};
-    int _last_observed_leader_id {1};
-    std::string _recovery_fname;      // name of instance's state recovery file
-    std::vector<int> _cluster_list;   // stores IDs of servers in cluster
+    int server_no;
+    ServerState server_state {FOLLOWER};
+    /* Track which nodes have voted for this instance during an election. */
+    std::set<int> votes_received;
+    /* Our best guess of the current RAFT leader to send to clients. */
+    int last_observed_leader_no {1};
+    /* Client requests are executed and responded to in order. Hence, a queue. */
+    std::queue<PendingRequest> pending_requests;
 
-    /* UTIL */
-    Messenger _messenger;
-    Timer _election_timer;
-    Timer _heartbeat_timer;
+    /* Maps { server number -> net address }. */
+    unordered_map<int, std::string> server_addrs;
+    /* Name of this instance's state recovery file. */
+    std::string recovery_file;
 
-    void RPC_handler(const RPC &rpc);
-    void handler_AppendEntries(const AppendEntries &ae);
-    void handler_RequestVote(const RequestVote &rv);
-    void handler_ClientCommand(const ClientRequest &cr);
-    void process_command_routine(std::string command, sockaddr_in client_addr);
-    void leader_tasks();
-    bool try_election();
-    void apply_log_entries();
+    /* UTIL. See the files that implement these classes for descriptions. */
+    PersistentStorage persistent_storage;
+    Messenger messenger;
+    TimedCallback election_timer;
+    TimedCallback heartbeat_timer;
 
-    void send_RPC(const RPC &rpc);
-    void send_RPC(const RPC &rpc, int _server_id);
-    std::optional<RPC> receive_RPC();
+    void handler_RAFTmessage(const RAFTmessage &msg, 
+      std::optional<Messenger::Request> req = std::nullopt);
+
+    /* RPC REQUEST HANDLERS */
+    void handler_RequestVote(Messenger::Request &req, 
+        const RequestVote &rv);
+    void handler_AppendEntries(Messenger::Request &req, 
+        const AppendEntries &ae);
+    void handler_ClientRequest(Messenger::Request &req, 
+        const ClientRequest &cr);
+
+    /* RPC RESPONSE HANDLERS */
+    void handler_RequestVote_response(const RequestVote &rv);
+    void handler_AppendEntries_response(const AppendEntries &ae);
+
+    /* TIMED CALLBACKS */
+    void start_election();
+    void send_heartbeats();
+
+    /* LOG ENTRY APPLICATION TASK */
+    void apply_log_entries_task();
+
+    /* HELPER FUNCTIONS */
+    void replicate_log(int peer_no);
+    void broadcast_msg(const RAFTmessage &msg);
 };

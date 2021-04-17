@@ -1,25 +1,16 @@
+#include "StateMachines/ShellCommandStateMachine.h"
 #include "Server.h"
 #include <iostream>
 
 int main(int argc, char* argv[]) {
     GOOGLE_PROTOBUF_VERIFY_VERSION;
+    loguru::init(argc, argv);
+    loguru::add_file("server.log", loguru::Truncate, loguru::Verbosity_MAX);
 
     if (argc < 2) {
         std::cerr << "Please specify the server number of this instance (i.e. "
             "which line of the server address list file corresponds to the "
             "instance you wish to launch?). See README for details.\n";
-        return EXIT_FAILURE;
-    }
-
-    std::string serverFilePath = argc == 3? argv[2] : DEFAULT_SERVER_FILE_PATH;
-
-    unordered_map<int, sockaddr_in> clusterInfo = 
-        parseClusterInfo(serverFilePath);
-    if (clusterInfo.empty()) {
-        std::cerr << "Invalid server address list! Either the file is "
-            "improperly formatted, or the custom path to the file is wrong, or "
-            "the default server_list has been deleted/moved/corrupted. See "
-            "README for details.\n";
         return EXIT_FAILURE;
     }
 
@@ -30,9 +21,28 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    std::cout << "SERVER #" << serverNumber << " NOW RUNNING\n";
-    Server s(serverNumber, clusterInfo);
-    s.run();
+    bool restarting = false;
+    if (argc >= 3) restarting = strcmp(argv[2], "-r") == 0 || 
+                                strcmp(argv[2], "-R") == 0;
+
+    
+    // current: command-line state machine
+    ShellCmdStateMachine sm;
+
+    // run the raft server
+    try {
+        Server s(serverNumber, DEFAULT_SERVER_FILE_PATH, &sm, restarting);
+        s.run();
+    }
+    catch (Messenger::Exception& me) {
+        std::cout << me.what() << std::endl;
+    }
+    catch (PersistentStorage::Exception& pse) {
+        std::cout << pse.what() << std::endl;
+    }
+    catch (...) {
+        std::cout << "General exception: fatal error" << std::endl;
+    }
 
     return 0;
 }

@@ -1,29 +1,34 @@
 #include "Client.h"
 #include <iostream>
 
-const int CLIENT_PORT = 3030;
+void run_shell(RaftClient &c);
 
 int main(int argc, char* argv[]) {
-    std::string serverFilePath = argc == 2? argv[1] : DEFAULT_SERVER_FILE_PATH;
-
-    unordered_map<int, sockaddr_in> clusterInfo = 
-        parseClusterInfo(serverFilePath);
-    if (clusterInfo.empty()) {
-        std::cerr << "Invalid server address list! Either the file is "
-            "improperly formatted, or the custom path to the file is wrong, or "
-            "the default server_list has been deleted/moved/corrupted. See "
-            "README for details.\n";
-        return EXIT_FAILURE;
+    // run the raft client application 
+    try {
+        RaftClient c(DEFAULT_SERVER_FILE_PATH);
+        run_shell(c);
+    }
+    catch (Messenger::Exception& me) {
+        std::cout << me.what() << std::endl;
+    }
+    catch (...) {
+        std::cout << "General exception: fatal error" << std::endl;
     }
 
-    sockaddr_in addr;
-    memset(&addr, '0', sizeof(addr));
-    addr.sin_family      = AF_INET;     // use IPv4
-    addr.sin_addr.s_addr = INADDR_ANY;  // use local IP
-    addr.sin_port        = htons(CLIENT_PORT);
-
-    Client c(addr, clusterInfo);
-    c.run();
-
     return 0;
+}
+
+/**
+ * Launches a RAFT shell, which loops indefinitely, accepting commands to be
+ * run on the RAFT cluster.
+ */
+void run_shell(RaftClient &c) {
+    std::cout << "--- WELCOME TO RASH (THE RAFT SHELL) ---\n";
+    for (;;) {
+        std::string cmd;
+        std::cout << "> ";
+        std::getline(std::cin, cmd);
+        std::cout << c.execute_command(cmd) << "\n";
+    }
 }

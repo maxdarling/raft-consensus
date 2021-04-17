@@ -2,41 +2,57 @@
 syntax = "proto3";
 
 message AppendEntries {
-    bool is_request = 1;
+    message LogEntry {
+        string command = 1;
+        int32 term = 2;
+    }
 
-    // Request fields
-    int32 term = 2;
-    int32 leader_id = 3;
+    /* SHARED FIELD */
+    int32 term = 1;
+
+    /* REQUEST FIELD */
+    int32 leader_no = 2;
+    int32 prev_log_idx = 3;
+    int32 prev_log_term = 4;
+    repeated LogEntry log_entries = 5;
+    int32 leader_commit = 6;
+
+    /* RESPONSE FIELDS */
+    int32 follower_no = 7;
+    bool success = 8;
+    int32 follower_next_idx = 9;
 }
 
 message RequestVote {
-    bool is_request = 1;
+    /* SHARED FIELD */
+    int32 term = 1;
 
-    // Request fields
-    int32 term = 2;
-    int32 candidate_id = 3;
+    /* REQUEST FIELD */
+    int32 candidate_no = 2;
+    int32 last_log_idx = 3;
+    int32 last_log_term = 4;
 
-    // Response fields
-    bool vote_granted = 4;
+    /* RESPONSE FIELDS */
+    int32 voter_no = 5;
+    bool vote_granted = 6;
 }
 
 message ClientRequest {
-    // Request fields (client)
+    /* REQUEST FIELD */
     string command = 1;
-    uint32 client_addr = 2;
-    int32 client_port = 3;
 
-    // Response fields (server)
-    bool success = 4;
-    int32 leader_id = 5;
-    string output = 6;
+    /* RESPONSE FIELDS */
+    bool success = 3;
+    int32 leader_no = 4;
+    string output = 5;
 }
 
-message RPC {
-    // Message instances
-    AppendEntries AppendEntries_message = 1;
-    RequestVote RequestVote_message = 2;
-    ClientRequest ClientRequest_message = 3;
+// Container object for the specific RPCs defined above.
+message RAFTmessage {
+    int32 term = 1;
+    AppendEntries AppendEntries_message = 2;
+    RequestVote RequestVote_message = 3;
+    ClientRequest ClientRequest_message = 4;
 }
 
 // For servers writing their persistent state variables to disk.
@@ -44,4 +60,5 @@ message ServerPersistentState {
     int32 current_term = 1;
     int32 term_voted = 2;
     int32 voted_for = 3;
+    int32 last_applied = 4;
 }

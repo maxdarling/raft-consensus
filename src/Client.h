@@ -2,21 +2,19 @@
 #include "util.h"
 
 /**
- * This class implements a RAFT client application that provides a RAFT shell
- * (RASH) interface to the user, which forwards bash command strings to be run
- * by the servers in the RAFT cluster.
+ * This class implements a RAFT client which forwards bash command strings to 
+ * be run by servers in the RAFT cluster specified by a server address file.
+ * See the README for details.
  */
-class Client {
+class RaftClient {
   public:
-    Client(const sockaddr_in &clientAddr, const unordered_map<int, sockaddr_in>& clusterInfo);
-    void run();
+    RaftClient(const std::string cluster_file);
+    std::string execute_command(std::string command);
     
   private:
-    Messenger _messenger;
-    unsigned int _clientAddr;
-    int _clientPort;
-    int _clusterSize;
-    int _leaderID {1};  // Best guess as to whom the cluster leader is currently
-
-    std::string executeCommand(std::string command);
+    Messenger messenger;
+    /* Maps { server number -> net address } */
+    unordered_map<int, std::string> server_addrs;
+    /* Best guess of the current cluster leader. */
+    int leader_no {1};
 };

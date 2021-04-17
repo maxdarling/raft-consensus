@@ -1,66 +1,56 @@
 #include "Client.h"
 #include "RaftRPC.pb.h"
 #include <iostream>
+#include <thread> 
+
+/* How long the client should wait before trying another server, in ms. */
+const int REQUEST_TIMEOUT = 3000;
+
+using std::string, std::optional;
 
 /**
  * Construct a client instance at the given address to be serviced by the
  * given cluster.
  */
-Client::Client(const sockaddr_in &clientAddr, 
-    const unordered_map<int, sockaddr_in>& clusterInfo)
-    : _messenger(clusterInfo, ntohs(clientAddr.sin_port)),
-      _clientAddr(ntohs(clientAddr.sin_addr.s_addr)),
-      _clientPort(ntohs(clientAddr.sin_port)),
-      _clusterSize(clusterInfo.size()) {}
-
-/**
- * Launches a RAFT shell, which loops indefinitely, accepting commands to be
- * run on the RAFT cluster.
- */
-void Client::run() {
-    std::cout << "--- WELCOME TO RASH (THE RAFT SHELL) ---\n";
-    for (;;) {
-        std::string cmd;
-        std::cout << "> ";
-        std::getline(std::cin, cmd);
-        std::cout << executeCommand(cmd) << "\n";
-    }
-}
+RaftClient::RaftClient(const std::string cluster_file)
+  : server_addrs(parseClusterInfo(cluster_file)) {}
 
 /**
  * Send a BASH cmd string to be run on the RAFT cluster, await a response, 
  * and return the output of the command.
  */
-std::string Client::executeCommand(std::string cmd) {
-    std::string serializedRequest;
+std::string RaftClient::execute_command(std::string cmd) {
+    std::string serialized_request;
     {
-        RPC rpc;
+        RAFTmessage msg;
         ClientRequest *cr = new ClientRequest();
+        msg.set_allocated_clientrequest_message(cr);
         cr->set_command(cmd);
-        cr->set_client_addr(_clientAddr);
-        cr->set_client_port(_clientPort);
-        rpc.set_allocated_clientrequest_message(cr);
-        serializedRequest = rpc.SerializeAsString();
+        serialized_request = msg.SerializeAsString();
     }
 
-    RPC serverResponse;
-    do {
-        // Cycle through servers until we find one that's not down
-        while (!_messenger.sendMessageToServer(_leaderID, serializedRequest)) {
-            _leaderID = (_leaderID + 1) % _clusterSize;
-            if (_leaderID == 0) ++_leaderID;
+    ClientRequest cr_response;
+    // rate limit retries so we don't exhaust all open files in system
+    for (; !cr_response.success(); std::this_thread::sleep_for(2s)) {
+        // send a request to the presumed leader
+        messenger.sendRequest(server_addrs[leader_no], serialized_request);
+
+        // wait for a response
+        optional<string> msg_opt = messenger.getNextResponse(REQUEST_TIMEOUT);
+        if (!msg_opt) {
+            // if no response, try a new server
+            leader_no = (leader_no + 1) % server_addrs.size();
+            if (leader_no == 0) leader_no++;
         }
 
-        std::optional<std::string> msgOpt;
-        while (!msgOpt) msgOpt = _messenger.getNextMessage();
+        RAFTmessage msg;
+        msg.ParseFromString(*msg_opt);
+        if (!msg.has_clientrequest_message()) {
+            return "ERROR: ill-formed response from server";
+        }
+        cr_response = msg.clientrequest_message();
+        leader_no = cr_response.leader_no();
+    }
 
-        serverResponse.ParseFromString(*msgOpt);
-
-        // CASE: ill-formed response from server (should never happen)
-        if (!serverResponse.has_clientrequest_message()) return {};
-
-        _leaderID = serverResponse.clientrequest_message().leader_id();
-    } while (!serverResponse.clientrequest_message().success());
-
-    return serverResponse.clientrequest_message().output();
+    return cr_response.output();
 }

@@ -6,12 +6,14 @@
 
 #include "Messenger.h"
 
+#include <sys/types.h>          /* See NOTES */
+#include <sys/socket.h>
+#include "loguru/loguru.hpp"
+
 using std::cout;
 using std::endl;
 
 const int PORT_BASE = 5000;
-const int FIRST_SERVER_NUMBER = 1;
-const int LAST_SERVER_NUMBER = 2;
 
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ATTENTION ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 
@@ -25,123 +27,96 @@ const int LAST_SERVER_NUMBER = 2;
    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ATTENTION ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
 
-void NetworkerTester(int serverNumber) {
-    int port = PORT_BASE + serverNumber; 
-    Networker networker(port);
-    cout << "Server #" << serverNumber << " has started" << endl;
-
-    // configure IP / port for remote connection
-    struct sockaddr_in addr;
-    memset(&addr, '0', sizeof(addr));
-    addr.sin_family = AF_INET; // use IPv4
-    addr.sin_addr.s_addr = INADDR_ANY; // use local IP
-    addr.sin_port = htons(port);
-
-    cout << "Waiting 10s till the rest of the servers are started..." << endl;
-    sleep(10);
-
-    unordered_map<int, int> serverNumberToFd;
-
-    // connect to the other servers
-    for (int i = FIRST_SERVER_NUMBER; i <= LAST_SERVER_NUMBER; ++i) {
-        if (i != serverNumber) {
-            addr.sin_port = htons(PORT_BASE + i);
-            int connfd = networker.establishConnection(addr);
-            serverNumberToFd[i] = connfd;
-            cout << "Successfully connected to server #" << i << endl;
-        }
-    }
-
-    // test sending / receiving bytes
-    int n_messages_sent = 0;
-    while(true) {
-        int readfd;
-        if ((readfd = networker.getNextReadableFd(false)) != -1) {
-            char buf [1024];
-            int n = read(readfd, buf, sizeof(buf));
-            std::string s(buf, n);  
-            cout << "the following was received on server " << serverNumber << ":" << endl;
-            cout << s << endl;
-        }
-
-        // send a message on a timer
-        int RAND_DELAY = rand() % 15;
-        sleep(RAND_DELAY);
-        
-        char buf [25];
-        sprintf(buf, "Message #%d from server#%d", n_messages_sent, serverNumber);
-        
-        // send 1 message to each peer server
-        for (auto it = serverNumberToFd.begin(); it != serverNumberToFd.end(); ++it) {
-            int peerServerNumber = it->first; 
-            cout << "peerServerNumber = " << peerServerNumber << endl;
-            int serverFd = serverNumberToFd[peerServerNumber]; 
-            cout << "serverFd = " << serverFd << endl;
-            networker.sendAll(serverFd, buf, sizeof(buf));
-            ++n_messages_sent;
-        }
-    }
 
 
-}
-
-void MessengerTester(int serverNumber) {
-    int port = PORT_BASE + serverNumber; 
-    cout << "Server #" << serverNumber << " has started" << endl;
-
-    // define the server list
-    struct sockaddr_in addr;
-    memset(&addr, '0', sizeof(addr));
-    addr.sin_family = AF_INET; // use IPv4
-    addr.sin_addr.s_addr = INADDR_ANY; // use local IP
-    addr.sin_port = htons(PORT_BASE);
+/* server numbers: 1 or 2 */
+void server_server(int serverNumber) {
+    // start Messenger
+    int myPort = PORT_BASE + serverNumber;
+    Messenger messenger(myPort);
 
     int nServers = 2;
-    // explicit initialization because loop version is less easy to visualize
-    unordered_map<int, struct sockaddr_in> serverList {
-        {1, addr},
-        {2, addr}
-    };
-    for (auto it = serverList.begin(); it != serverList.end(); ++it) {
-        it->second.sin_port = htons(PORT_BASE + it->first);
-        cout << "created server list entry. ID = "<< it->first << ",  port = " << it->second.sin_port << endl;
-    }
+    cout << "Server #" << serverNumber << " of " << nServers << " has started" << endl;
 
-    // start Messenger
-    Messenger messenger(serverNumber, serverList);
-
-    // send messages
-    int n_messages_sent = 0;
     while(true) {
-        // pick a random server to send a message to
-        int peerServerNumber; 
-        while ((peerServerNumber = 1 + (rand() % serverList.size())) == serverNumber);
+        int peerServerNumber = (serverNumber == 1 ? 2 : 1);
+        std::string peerHostAndPort = "0:" + std::to_string(PORT_BASE + peerServerNumber);
         
-        // construct a message
-        std::string message = "\n\n~~~~~~Message #" + std::to_string(++n_messages_sent) + 
-                              " from server #" + std::to_string(serverNumber) + "~~~~~~~\n\n";
- 
+
+        // get any responses
+        std::optional<std::string> responseOpt = messenger.getNextResponse(100);
+        if (responseOpt) {
+            cout << "Response received: " << endl;
+            cout << *responseOpt << endl;
+        } else {
+            cout << "No response recieved in time" << endl;
+        }
         
-        // send the message
-        messenger.sendMessageToServer(peerServerNumber, message);
+        // send a request
+        messenger.sendRequest(peerHostAndPort, "this is a request\n"); 
 
-       sleep(5);
 
-        // check for received messages
-        std::optional<std::string> incMsgWrapper = messenger.getNextMessage();
-        if (incMsgWrapper) {
-            cout << "Message received:" << endl;
-            cout << (*incMsgWrapper) << endl; 
+        // check for requests
+        int timeoutMs = 100;
+        std::optional<Messenger::Request> requestOpt = messenger.getNextRequest(timeoutMs);
+        if (requestOpt) {
+            cout << "Request received:" << endl;
+            cout << (requestOpt->message) << endl; 
+            requestOpt->sendResponse("this is a response\n");
+        } else {
+            cout << "No request received in time" << endl;
+        }
+    
+        sleep(3);
+    }
+}
+
+
+/* tests client and server instance. 
+    
+    client is server 1, server is server2
+*/
+void client_server(int serverNumber) {
+    if (serverNumber == 1) {
+        Messenger messenger;
+        while(true) {
+            // get a response if exists
+            std::optional<std::string> reqOpt = messenger.getNextResponse(100);
+            if (reqOpt) {
+                cout << "Response recieved: " << reqOpt.value() << endl;
+            }
+
+            // send message to receiver
+            messenger.sendRequest("0:5002", "~This is a message~\n");
+            cout << "sent request" << endl;
+            sleep(3);
+        }
+    }
+    else if (serverNumber == 2) {
+        Messenger messenger(5002);
+        while(true) {
+            // receive message from sender
+            std::optional<Messenger::Request> reqOpt = messenger.getNextRequest(100);
+            if (reqOpt) {
+                cout << "Request recieved: " << reqOpt.value().message;
+                // send response
+                cout << "about to send response" << endl;
+                reqOpt.value().sendResponse("~This is a response\n");
+                cout << "sent response" << endl;
+            }
+
+            sleep(3);
         }
     }
 }
+
 
 int main(int argc, char* argv[])
 {
     int serverNumber = std::stoi(argv[1]);
-    //NetworkerTester(serverNumber);
-    MessengerTester(serverNumber);
+    //server_server(serverNumber);
+    client_server(serverNumber);
 
-    cout << "Program End" << endl;
+
     return 0;
 }
