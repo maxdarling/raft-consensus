@@ -1,4 +1,5 @@
 #include "StateMachines/ShellCommandStateMachine.h"
+#include "StateMachines/KVStateMachine.h"
 #include "Server.h"
 #include <iostream>
 
@@ -26,8 +27,8 @@ int main(int argc, char* argv[]) {
                                 strcmp(argv[2], "-R") == 0;
 
     
-    // current: command-line state machine
-    ShellCmdStateMachine sm;
+    //ShellCmdStateMachine sm;
+    KVStateMachine sm;
 
     // run the raft server
     try {

@@ -24,7 +24,9 @@ int main(int argc, char* argv[]) {
  * run on the RAFT cluster.
  */
 void run_shell(RaftClient &c) {
-    std::cout << "--- WELCOME TO RASH (THE RAFT SHELL) ---\n";
+    std::cout << "--- WELCOME TO THE RAFT REPL ---" << std::endl;
+    std::cout << "Reminder: you can check which state machine is active in "
+                 "\'src/server-main.cpp\'" << std::endl<<std::endl;
     for (;;) {
         std::string cmd;
         std::cout << "> ";

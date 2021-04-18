@@ -73,7 +73,7 @@ target_link_libraries(raft_client ${Protobuf_LIBRARIES})
 add_executable(test_driver src/TestDriver.cpp ${TEST_SRCS} ${TEST_HDRS})
 target_link_libraries(test_driver ${Protobuf_LIBRARIES})
 
-add_executable(log_tests src/log-tests.cpp src/Log.h)
+#add_executable(log_tests src/log-tests.cpp src/Log.h)
 
 # so we can include generated protobuf headers
 target_include_directories(raft_server PUBLIC build)
