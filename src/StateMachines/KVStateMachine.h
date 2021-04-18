@@ -1,6 +1,7 @@
 #include "StateMachine.h"
 #include <sstream>
 #include <unordered_map>
+#include <fstream>
 
 using std::string;
 
@@ -59,6 +60,37 @@ class KVStateMachine : public StateMachine {
         } else {
             return "Error: invalid command name; not one of GET, SET, DELETE";
         }
+    }
+
+
+    bool exportState(string filename) {
+        std::ofstream ofs(filename, std::ios::trunc | std::ios::binary);
+        if (!ofs) {
+            return false;
+        }
+
+        /* simple export scheme: space delimited tokens */
+        for (auto &[key, value] : _map) {
+            ofs << key << " " << value << " ";
+        }
+        ofs.close();
+        return true;
+    }
+
+
+    bool importState(string filename) {
+        std::ifstream ifs(filename, std::ios::binary);
+        if (!ifs) {
+            return false;
+        }
+
+        _map = {};
+        string key, value;
+        while(ifs >> key >> value) {
+            _map[key] = value;
+        }
+        ifs.close();
+        return true;
     }
 
   private:
