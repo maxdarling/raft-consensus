@@ -1,4 +1,4 @@
-#include "RaftRPC.pb.h"
+#include "RaftPersistentState.pb.h"
 #include <fstream>
 
 

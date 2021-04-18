@@ -16,7 +16,7 @@ add_compile_options(-Wall -Werror)
 # generate protobuf cpp files
 find_package(Protobuf REQUIRED)
 include_directories(${PROTOBUF_INCLUDE_DIRS})
-protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS src/RaftRPC.proto)
+protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS src/RaftRPC.proto src/RaftPersistentState.proto)
 
 set(SERVER_SRCS
   src/Server.cpp
