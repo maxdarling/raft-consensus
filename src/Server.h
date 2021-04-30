@@ -1,7 +1,7 @@
 #include "Messenger.h"
 #include "TimedCallback.h"
-#include "Log.h"
 #include "PersistentStorage.h"
+#include "RaftLog.h"
 #include "util.h"
 #include "loguru/loguru.hpp"
 #include "RaftRPC.pb.h"
@@ -24,14 +24,6 @@ class Server {
       CANDIDATE,
       LEADER
     };
-
-    // temp: make this public for 'raft_log'
-  public:
-    struct LogEntry {
-      std::string command;
-      int term;
-    };
-  private:
 
     /* Client requests only receive responses from the leader after the
      * corresponding log entry has been replicated in a majority of the servers
@@ -64,7 +56,7 @@ class Server {
     /* PERSISTENT STATE */
     int current_term {0};
     Vote vote {-1, -1};
-    Log<LogEntry> log;
+    RaftLog log;
 
     /* VOLATILE STATE ON ALL SERVERS */
     int commit_index {0};

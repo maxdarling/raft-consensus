@@ -10,78 +10,6 @@ const int HEARTBEAT_TIMEOUT = 2000;
 using std::optional, std::string, std::lock_guard, std::mutex;
 
 
-/*
-    note: This should be perfectly functional. 
-
-    ~ Alternative #1: use simple index/size conversion methods instead of a class
-        -it would be less code!
-        -but, it would have cognitive load
-    
-    ~ Alternative #2: do nothing (ie. shift indices around in the existing code)
-        -this has identical cons to alternative #1, but is a little worse
-
-    ~ Alternative #3: inherited class
-        -a big pro would be if Log doesn't appear anywhere, and instead we only
-        have this raft_log. This would reduce cognitive overhead and confusion 
-        that there's two logs.
-        -big con is that I have to redefine constructor, private members, etc. 
-
-    ~ This class
-        -con is that it's confusing that there's this class and then the Log
-        - if the Log is a private member and this class isn't people will 
-        mistakenly use Log for sure. 
-*/
-/** 
- * A helper wrapper class over a Log. The purpose of this class is to allow 
- * the proceeding raft code to work in terms of the log's LOGICAL size and 
- * index, which, due to snapshotting, is different than the size and index
- * of the physical log. This class peforms the translations so that the programmer
- * may think in terms of the logical indices, not physical ones. This is helpful
- * as servers MUST communicate in terms of the logical indices. 
- */  
-class RaftLog{
-    public: 
-        RaftLog(Log<Server::LogEntry>& log, PersistentStorage& ps) : 
-            _phys_log(log), _ps(ps) {};
-
-        /* mimicked Log API */
-        void clear() { _phys_log.clear(); }
-
-        void recover(int _offset = 0) { 
-            _phys_log.recover(_offset - _ps.state().last_included_index()); 
-        }
-
-        void trunc(int new_size) { 
-            _phys_log.trunc(new_size - _ps.state().last_included_index()); 
-        }
-
-        void append(const Server::LogEntry& entry) { _phys_log.append(entry); }
-
-        int size() const { 
-            return _phys_log.size() + _ps.state().last_included_index();
-        };
-
-        bool empty() const { return size() == 0; }
-
-        Server::LogEntry operator[](int i) {
-            int phys_idx = i - _ps.state().last_included_index();
-            if (phys_idx == 0 && _ps.state().last_included_index() != 0) {
-                // special case: raft_log[0].term -> last_included_term
-                return {"RAFT_LOG: ERROR", _ps.state().last_included_term()};
-                /* note: this looks pretty dangerous: can't guarantee an error 
-                   if they access pos 0 */
-                /* todo: check if I need/want this. where does it help? */
-            }
-            return _phys_log[phys_idx];
-        }
-    private:
-        Log<Server::LogEntry>& _phys_log;
-        PersistentStorage& _ps;
-};
-
-// global! I want to put it here over the .h file because I think this is 
-// an implementation-specific helper. 
-RaftLog* log;
 
 
 /*****************************************************************************
@@ -99,9 +27,9 @@ Server::Server(const int _server_no, const string cluster_file,
                StateMachine *_state_machine, bool restarting)
   : state_machine(_state_machine), 
     log_file("log" + std::to_string(_server_no)),
-    _log(log_file, 
+    log(new Log<RaftLog::LogEntry>(log_file, 
         /* serialize LogEntry to string */
-        [](const LogEntry &entry) {
+        [](const RaftLog::LogEntry &entry) {
             return std::to_string(entry.term) + " " + entry.command;
         },
         /* deserialize LogEntry from string */
@@ -109,9 +37,9 @@ Server::Server(const int _server_no, const string cluster_file,
             size_t delimiter_idx = entry_str.find(" ");
             int term = std::stoi(entry_str.substr(0, delimiter_idx));
             string command = entry_str.substr(delimiter_idx + 1);
-            return LogEntry {command, term};
+            return RaftLog::LogEntry {command, term};
         }
-    ),
+    ),persistent_storage),
     server_no(_server_no),
     server_addrs(parseClusterInfo(cluster_file)),
     recovery_file("server" + std::to_string(server_no) + "_state"),
@@ -134,14 +62,11 @@ Server::Server(const int _server_no, const string cluster_file,
                     "voted for: S%d | last applied: %d", 
             current_term, vote.term_voted, vote.voted_for, last_applied);
         // recover log
-        _log.recover(last_applied);
+        log.recover(last_applied);
     }
 
     // If server is starting from scratch, delete any log artifacts.
-    else _log.clear();
-
-    // init RaftLog
-    log(_log&, &persistent_storage);
+    else log.clear();
 }
 
 /**
@@ -325,7 +250,7 @@ void Server::handler_AppendEntries(Messenger::Request &req,
     // append any new entries not already in log
     int new_entry_idx = ae.prev_log_idx() + 1;
     for (int i = 0; i < ae.log_entries_size(); i++, new_entry_idx++) {
-        LogEntry new_entry = {ae.log_entries(i).command(), 
+        RaftLog::LogEntry new_entry = {ae.log_entries(i).command(), 
             ae.log_entries(i).term()};
         // CASE: an entry at this index already exists in log
         if (new_entry_idx <= log.size()) {
