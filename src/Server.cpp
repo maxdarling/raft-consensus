@@ -9,6 +9,81 @@ const int HEARTBEAT_TIMEOUT = 2000;
 
 using std::optional, std::string, std::lock_guard, std::mutex;
 
+
+/*
+    note: This should be perfectly functional. 
+
+    ~ Alternative #1: use simple index/size conversion methods instead of a class
+        -it would be less code!
+        -but, it would have cognitive load
+    
+    ~ Alternative #2: do nothing (ie. shift indices around in the existing code)
+        -this has identical cons to alternative #1, but is a little worse
+
+    ~ Alternative #3: inherited class
+        -a big pro would be if Log doesn't appear anywhere, and instead we only
+        have this raft_log. This would reduce cognitive overhead and confusion 
+        that there's two logs.
+        -big con is that I have to redefine constructor, private members, etc. 
+
+    ~ This class
+        -con is that it's confusing that there's this class and then the Log
+        - if the Log is a private member and this class isn't people will 
+        mistakenly use Log for sure. 
+*/
+/** 
+ * A helper wrapper class over a Log. The purpose of this class is to allow 
+ * the proceeding raft code to work in terms of the log's LOGICAL size and 
+ * index, which, due to snapshotting, is different than the size and index
+ * of the physical log. This class peforms the translations so that the programmer
+ * may think in terms of the logical indices, not physical ones. This is helpful
+ * as servers MUST communicate in terms of the logical indices. 
+ */  
+class RaftLog{
+    public: 
+        RaftLog(Log<Server::LogEntry>& log, PersistentStorage& ps) : 
+            _phys_log(log), _ps(ps) {};
+
+        /* mimicked Log API */
+        void clear() { _phys_log.clear(); }
+
+        void recover(int _offset = 0) { 
+            _phys_log.recover(_offset - _ps.state().last_included_index()); 
+        }
+
+        void trunc(int new_size) { 
+            _phys_log.trunc(new_size - _ps.state().last_included_index()); 
+        }
+
+        void append(const Server::LogEntry& entry) { _phys_log.append(entry); }
+
+        int size() const { 
+            return _phys_log.size() + _ps.state().last_included_index();
+        };
+
+        bool empty() const { return size() == 0; }
+
+        Server::LogEntry operator[](int i) {
+            int phys_idx = i - _ps.state().last_included_index();
+            if (phys_idx == 0 && _ps.state().last_included_index() != 0) {
+                // special case: raft_log[0].term -> last_included_term
+                return {"RAFT_LOG: ERROR", _ps.state().last_included_term()};
+                /* note: this looks pretty dangerous: can't guarantee an error 
+                   if they access pos 0 */
+                /* todo: check if I need/want this. where does it help? */
+            }
+            return _phys_log[phys_idx];
+        }
+    private:
+        Log<Server::LogEntry>& _phys_log;
+        PersistentStorage& _ps;
+};
+
+// global! I want to put it here over the .h file because I think this is 
+// an implementation-specific helper. 
+RaftLog* log;
+
+
 /*****************************************************************************
  *                              PUBLIC INTERFACE                             *
  *****************************************************************************/
@@ -24,7 +99,7 @@ Server::Server(const int _server_no, const string cluster_file,
                StateMachine *_state_machine, bool restarting)
   : state_machine(_state_machine), 
     log_file("log" + std::to_string(_server_no)),
-    log(log_file, 
+    _log(log_file, 
         /* serialize LogEntry to string */
         [](const LogEntry &entry) {
             return std::to_string(entry.term) + " " + entry.command;
@@ -54,16 +129,19 @@ Server::Server(const int _server_no, const string cluster_file,
         ServerPersistentState &sps = persistent_storage.state();
         current_term = sps.current_term();
         if (sps.voted_for() != 0) vote = {sps.term_voted(), sps.voted_for()};
-        last_applied = sps.last_applied();
+        last_applied = sps.last_applied(); // todo: remove (0 before finishing snapshot, last_included_index after)
         LOG_F(INFO, "term: %d | vote term: %d | "
                     "voted for: S%d | last applied: %d", 
             current_term, vote.term_voted, vote.voted_for, last_applied);
         // recover log
-        log.recover(last_applied);
+        _log.recover(last_applied);
     }
 
     // If server is starting from scratch, delete any log artifacts.
-    else log.clear();
+    else _log.clear();
+
+    // init RaftLog
+    log(_log&, &persistent_storage);
 }
 
 /**
@@ -223,6 +301,18 @@ void Server::handler_AppendEntries(Messenger::Request &req,
     // CASE: heartbeat received, no log entries to process
     if (ae.log_entries_size() == 0) return;
 
+
+    /* bug (perhaps not covered by raft): it's possible for ae.prev_log_idx() to
+    be out of range (too large) for 'log'. This happens when a server joins
+    late when the leader's log has some entries.
+    
+    To replicate the bug, start with 2 servers, append at least 1 log entry,
+    force a re-election (this updates and increases next_index, which
+    'prev_log_idx' derives from), join a new server, and append another log
+    entry. */
+
+    /* assumption for snapshotting project: no need to worry about this, as 
+       the fix for this bug isn't reltaed to snapshotting */
     if (ae.prev_log_idx() > 0 && 
         log[ae.prev_log_idx()].term != ae.prev_log_term()) {
         LOG_F(INFO, "S%d prev log entry doesn't match AE req from S%d", 
@@ -243,7 +333,10 @@ void Server::handler_AppendEntries(Messenger::Request &req,
                 LOG_F(INFO, "S%d received conflicting log entry: "
                             "\"%s\" replaced with \"%s\"", 
                     server_no, 
-                    log[new_entry_idx].command.c_str(), 
+                    /* possible snapshotting bug on next line: if the entire 
+                       logical log is the snapshot, this is accessing the 
+                       last element, so .command won't work. */
+                    log[new_entry_idx].command.c_str(),
                     new_entry.command.c_str()
                 );
 
@@ -393,6 +486,7 @@ void Server::start_election()
  */
 void Server::send_heartbeats()
 {
+    /* todo (after 191): heartbeats should contain missing log entires */
     if (server_state != LEADER) return;
     heartbeat_timer.start();
     RAFTmessage heartbeat_msg;
@@ -515,3 +609,64 @@ void Server::broadcast_msg(const RAFTmessage &msg)
         messenger.sendRequest(peer_addr, msg_str);
     }
 }
+
+
+/*****************************************************************************
+ *                             SNAPSHOT-RELATED                              *
+ *****************************************************************************/
+
+
+ /** 
+  * Update RAFT's current snapshot with a new one. 
+  *
+  * The steps are performed in a fault-tolerant way, such 
+  * that the worst case is that a new snapshot was written but the system 
+  * crashes before RAFT gets a chance to bookkeep this and upgrade it's snapshot.
+  * Importantly, snapshots are never deleted unsafely. 
+  */
+  void Server::write_snapshot() {
+    // create alt snapshot
+    string current_filename = persistent_storage.state().snapshot_filename();
+    string new_filename = (current_filename == "snapshot_a" ? 
+                                               "snapshot_b" : "snapshot_a");
+    /* Above, I've chosen an naming scheme that alternates between two names, 
+       'a' and 'b'. The most natural solution is to choose a temporary name for
+       the new snapshot, and then once it's written, delete the old snapshot 
+       and update the new snapshot to the main name. However, you run into 
+       issues. If you update p_store to temp, then delete and rename, then 
+       you can crash before updating p_store. If you don't update p_store at 
+       all, then you can crash with just temp on disk, which seems okay, but 
+       then that's a check you have to do at recovery. 
+
+       Overall, this seems to be the only way to guarantee the persistent
+       storage filename always points to a valid snapshot (valid, but not
+       always new).  */
+    
+    if (!state_machine->exportState(new_filename)) {
+        throw "write_snapshot(): " + string(strerror(errno));
+    }
+
+    //write metadata
+    // note: must do last_applied instead of commit_index because we can only
+    // snapshot safely once something is applied
+
+    /* to consider: could be cheeky if we do last_applied - 1 here. this would 
+       guarantee that there's always a physical committed log entry after the 
+       snapshot. thus, the log[0].term condition dissapears. 
+
+       new: I actually don't think this eliminates the need for log[0]
+    */
+    int idx = last_applied - 1;
+    persistent_storage.state().set_last_included_index(idx);
+    persistent_storage.state().set_last_included_term(log[idx].term);
+    persistent_storage.state().set_snapshot_filename(new_filename);
+    persistent_storage.save();
+
+    // delete the old snapshot
+    if (std::remove(current_filename.c_str()) != 0) {
+        throw "write_snapshot(): " + string(strerror(errno));
+    }
+
+    // delete log up through end of snapshot
+    // todo: figure out how to remove from the front of the log 
+  }

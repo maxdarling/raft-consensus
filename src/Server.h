@@ -25,10 +25,13 @@ class Server {
       LEADER
     };
 
+    // temp: make this public for 'raft_log'
+  public:
     struct LogEntry {
       std::string command;
       int term;
     };
+  private:
 
     /* Client requests only receive responses from the leader after the
      * corresponding log entry has been replicated in a majority of the servers
@@ -117,4 +120,7 @@ class Server {
     /* HELPER FUNCTIONS */
     void replicate_log(int peer_no);
     void broadcast_msg(const RAFTmessage &msg);
+
+    /* SNAPSHOTTING */
+    void write_snapshot();
 };
