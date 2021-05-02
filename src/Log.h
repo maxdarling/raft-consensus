@@ -4,6 +4,8 @@
 #include <unistd.h>
 #include <cstdio>
 
+#include <iostream> // testing
+
 /* Width of each line in the table file, in bytes. */
 const int TABLE_ENTRY_WIDTH = 5;
 
@@ -26,6 +28,7 @@ class Log {
     void clear();
     void recover(int _offset = 0);
     void trunc(int new_size);
+    void clip_front(int i);
     void append(const T &entry);
     /* Return the number of entries stored in the log. */
     int size() const { return log_cache.size() + offset; }
@@ -100,8 +103,9 @@ void Log<T>::recover(int _offset)
 }
 
 /**
- * Truncate the log to the specified size. If new_size >= current size or
- * new_size is negative, this function has no effect.
+ * Truncate the log to the specified size by removing from the end of the log.
+ * If new_size >= current size or new_size is negative, this function has no
+ * effect.
  */
 template <typename T>
 void Log<T>::trunc(int new_size)
@@ -112,6 +116,47 @@ void Log<T>::trunc(int new_size)
     truncate(log_file.c_str(), log_file_pos(new_size));
     log_cache.resize(new_size - offset > 0 ? new_size - offset : 0);
     if (new_size < offset) offset = new_size;
+}
+
+
+/**
+ * Remove all entries from the start of the log up to and including the entry 
+ * at index'i'. 
+ */
+template <typename T>
+void Log<T>::clip_front(int i) {
+    /* Note to self (4/30/21): I want this here instead of above in RaftLog 
+       with the goal of pulling complexity downwards. 
+
+       Things are ugly in any case. We have two files in this case (log and table), 
+       so we're screwed no matter what in terms of atomicity. 
+
+       I'm also reassigning what 'this' points to, which is something I
+       thought of for the first time.  I'm almost certain it's not smiled
+       upon stylistically, but at least it works.  I felt the only choice is
+       to build up a new Log instance with '.append()' so as not to re-implement
+       anything. 
+    */
+
+    // make a copy of the end of the log (ie. [i+1:])
+    auto new_log = 
+        new Log<T>(log_file + "_temp", serialize_entry, deserialize_entry);
+
+    for (int idx = i + 1; idx <= size(); ++idx) {
+        new_log->append((*this)[idx]);
+    }
+
+    // the log is done, so replace the files (not atomic! allowing for now...)
+    std::string orig_logname = log_file;
+    std::string orig_tablename = table_file;
+    *this = *new_log;
+
+    // swap complete. now, delete old files and rename
+    std::remove(orig_logname.c_str());
+    std::remove(orig_tablename.c_str());
+    // also not atomic and dangerous, allowing for now...
+    std::rename(log_file.c_str(), orig_logname.c_str());
+    std::rename(table_file.c_str(), orig_tablename.c_str());
 }
 
 /**

@@ -6,6 +6,8 @@
 
 #include "Messenger.h"
 
+#include "Log.h"
+
 #include <sys/types.h>          /* See NOTES */
 #include <sys/socket.h>
 #include "loguru/loguru.hpp"
@@ -111,12 +113,44 @@ void client_server(int serverNumber) {
 }
 
 
+void test_log() {
+
+    // test if "clip_front" works
+    Log<int> log(
+        "logfile", 
+        [](const int& a) { return std::to_string(a); }, 
+        [](std::string a) { return std::stoi(a); }
+    );
+
+    int size = 2;
+    for (int i = 1; i <= size; ++i) {
+        log.append(i);
+    }
+
+    cout << "log before: ";
+    for (int i = 1; i <= log.size(); ++i) {
+        cout << log[i] << ", ";
+    }
+    cout << endl;
+
+    log.clip_front(0);
+
+
+    cout << "log after: ";
+    for (int i = 1; i <= log.size(); ++i) {
+        cout << log[i] << ", ";
+    }
+    cout << endl;
+}
+
+
 int main(int argc, char* argv[])
 {
-    int serverNumber = std::stoi(argv[1]);
+    //int serverNumber = std::stoi(argv[1]);
     //server_server(serverNumber);
-    client_server(serverNumber);
+    //client_server(serverNumber);
 
+    test_log();
 
     return 0;
 }
