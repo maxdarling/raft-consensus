@@ -7,6 +7,7 @@
 #include "Messenger.h"
 
 #include "Log.h"
+#include "RaftLog.h"
 
 #include <sys/types.h>          /* See NOTES */
 #include <sys/socket.h>
@@ -14,6 +15,7 @@
 
 using std::cout;
 using std::endl;
+using std::string;
 
 const int PORT_BASE = 5000;
 
@@ -112,17 +114,55 @@ void client_server(int serverNumber) {
     }
 }
 
+void test_raft_log() {
+    string log_file = "logfile";
+    PersistentStorage ps("fake_recovery_file");
+    RaftLog log (new Log<RaftLog::LogEntry>(log_file, 
+        [](const RaftLog::LogEntry &entry) {
+            return std::to_string(entry.term) + " " + entry.command;
+        },
+        [](string entry_str) {
+            size_t delimiter_idx = entry_str.find(" ");
+            int term = std::stoi(entry_str.substr(0, delimiter_idx));
+            string command = entry_str.substr(delimiter_idx + 1);
+            return RaftLog::LogEntry {command, term};
+        }
+    ), ps);
+
+    int size = 10;
+    for (int i = 1; i <= size; ++i) {
+        log.append({"fake command", i});
+    }
+
+    cout << "log before: ";
+    for (int i = 1; i <= log.size(); ++i) {
+        cout << log[i].term << ", ";
+    }
+    cout << endl;
+
+    log.clip_front(3);
+
+
+    cout << "log after: ";
+    for (int i = 1; i <= log.size(); ++i) {
+        cout << log[i].term << ", ";
+    }
+    cout << endl;
+
+    std::remove(log_file.c_str());
+    std::remove((log_file + "table").c_str());
+}
 
 void test_log() {
 
-    // test if "clip_front" works
+    auto serialize = [](const int& a) { return std::to_string(a); };
+    auto deserialize = [](std::string a) { return std::stoi(a); };
     Log<int> log(
-        "logfile", 
-        [](const int& a) { return std::to_string(a); }, 
-        [](std::string a) { return std::stoi(a); }
+        "logfile", serialize, deserialize 
     );
+    string log_file = "logfile";
 
-    int size = 2;
+    int size = 10;
     for (int i = 1; i <= size; ++i) {
         log.append(i);
     }
@@ -133,7 +173,7 @@ void test_log() {
     }
     cout << endl;
 
-    log.clip_front(0);
+    log.clip_front(3);
 
 
     cout << "log after: ";
@@ -141,6 +181,11 @@ void test_log() {
         cout << log[i] << ", ";
     }
     cout << endl;
+
+
+
+    std::remove("logfile");
+    std::remove("logfiletable");
 }
 
 
@@ -150,7 +195,8 @@ int main(int argc, char* argv[])
     //server_server(serverNumber);
     //client_server(serverNumber);
 
-    test_log();
+    //test_log();
+    test_raft_log();
 
     return 0;
 }

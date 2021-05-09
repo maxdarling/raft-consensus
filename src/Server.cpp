@@ -1,11 +1,16 @@
 #include "Server.h"
 #include <array>
+#include <string>
 #include <thread>
+#include <unistd.h>
 
 /* In milliseconds. */
 const int ELECTION_TIMEOUT_LOWER_BOUND = 5000;
 const int ELECTION_TIMEOUT_UPPER_BOUND = 10000;
 const int HEARTBEAT_TIMEOUT = 2000;
+
+/* The maximum allowed size of the physical log. */
+const int MAX_LOG_SIZE = 2;
 
 using std::optional, std::string, std::lock_guard, std::mutex;
 
@@ -57,12 +62,21 @@ Server::Server(const int _server_no, const string cluster_file,
         ServerPersistentState &sps = persistent_storage.state();
         current_term = sps.current_term();
         if (sps.voted_for() != 0) vote = {sps.term_voted(), sps.voted_for()};
-        last_applied = sps.last_applied(); // todo: remove (0 before finishing snapshot, last_included_index after)
+
+        // new (snapshotting):
+        if (!state_machine->importState(sps.snapshot_filename())) {
+            throw "Server::Server(): could not recover state machine: " +
+            string(strerror(errno));
+        }
+        /* note: while formerly we could reset to 0, it's now necessary to
+         * recover last_applied. can't get away with setting it to zero or we'll
+         * have out of bounds errors in the snapshot. */
+        last_applied = sps.last_included_index(); 
+        log.recover();
+        LOG_F(INFO, "Recovery successsful!");
         LOG_F(INFO, "term: %d | vote term: %d | "
                     "voted for: S%d | last applied: %d", 
             current_term, vote.term_voted, vote.voted_for, last_applied);
-        // recover log
-        log.recover(last_applied);
     }
 
     // If server is starting from scratch, delete any log artifacts.
@@ -213,6 +227,8 @@ void Server::handler_AppendEntries(Messenger::Request &req,
 
     // CASE: reject stale request
     if (ae.term() < current_term) {
+        LOG_F(INFO, "follower: received req. has stale term\n"
+                     "mine: %d, leader's: %d", current_term, ae.term());
         ae_response->set_success(false);
         req.sendResponse(response.SerializeAsString());
         return;
@@ -224,7 +240,10 @@ void Server::handler_AppendEntries(Messenger::Request &req,
     election_timer.start();
 
     // CASE: heartbeat received, no log entries to process
-    if (ae.log_entries_size() == 0) return;
+    if (ae.log_entries_size() == 0) {
+        //todo: remove this case (heartbeats shouldn't be distinguished)
+        return;
+    }
 
 
     /* bug (perhaps not covered by raft): it's possible for ae.prev_log_idx() to
@@ -238,7 +257,22 @@ void Server::handler_AppendEntries(Messenger::Request &req,
 
     /* assumption for snapshotting project: no need to worry about this, as 
        the fix for this bug isn't reltaed to snapshotting */
-    if (ae.prev_log_idx() > 0 && 
+
+    /* new (snapshotting): follower can also dip back into it's log. 
+        -if the follower is trying to index at physical 0, it's correct protocol
+        to use last_included_term
+        - it can't be earlier than that (last_included_index), because that's 
+        applied, so by the "State Machine Safety" property (fig 3), a valid 
+        leader would have that entry, and invalid leaders are ruled out above
+    */
+    bool fine_by_last_incl_term = 
+        ae.prev_log_idx() == persistent_storage.state().last_included_index() && 
+        ae.prev_log_term() == persistent_storage.state().last_included_term();
+
+    /* impossible for it to be lower by the comment above */
+    assert(ae.prev_log_idx() >= persistent_storage.state().last_included_index());
+
+    if (!fine_by_last_incl_term && ae.prev_log_idx() > 0 && 
         log[ae.prev_log_idx()].term != ae.prev_log_term()) {
         LOG_F(INFO, "S%d prev log entry doesn't match AE req from S%d", 
             server_no, ae.leader_no());
@@ -258,9 +292,9 @@ void Server::handler_AppendEntries(Messenger::Request &req,
                 LOG_F(INFO, "S%d received conflicting log entry: "
                             "\"%s\" replaced with \"%s\"", 
                     server_no, 
-                    /* possible snapshotting bug on next line: if the entire 
-                       logical log is the snapshot, this is accessing the 
-                       last element, so .command won't work. */
+                    /* almost seems like a snapshotting bug, since .commanand
+                       isn't defined for last_included_index, but in that case
+                       we never get here because the terms must agree */
                     log[new_entry_idx].command.c_str(),
                     new_entry.command.c_str()
                 );
@@ -272,6 +306,10 @@ void Server::handler_AppendEntries(Messenger::Request &req,
 
         LOG_F(INFO, "S%d replicating cmd: %s", server_no, 
             new_entry.command.c_str());
+        // new (snapshotting): snapshot guard on appends
+        if (log.physical_size() >= MAX_LOG_SIZE) {
+            write_snapshot();
+        }
         log.append(new_entry);
     }
 
@@ -283,6 +321,7 @@ void Server::handler_AppendEntries(Messenger::Request &req,
     ae_response->set_follower_next_idx(new_entry_idx);
     ae_response->set_success(true);
     req.sendResponse(response.SerializeAsString());
+    LOG_F(INFO, "follower: sent next index of %d to leader", new_entry_idx);
 }
 
 /**
@@ -307,14 +346,19 @@ void Server::handler_ClientRequest(Messenger::Request &req,
     }
 
     LOG_F(INFO, "S%d logging CR: %s", server_no, cr.command().c_str());
+    if (log.physical_size() >= MAX_LOG_SIZE) {
+        write_snapshot();
+    }
     log.append({cr.command(), current_term});
     pending_requests.push(
         {std::move(req), log.size(), current_term}
     );
 
     // Send new entry to followers
-    for (int peer_no = 1; peer_no <= server_addrs.size(); peer_no++)
+    for (int peer_no = 1; peer_no <= server_addrs.size(); peer_no++) {
+        //LOG_F(INFO, "calling repl_log from client req handler, to server %d", peer_no);
         replicate_log(peer_no);
+    }
 }
 
 /*****************************************************************************
@@ -370,6 +414,7 @@ void Server::handler_AppendEntries_response(const AppendEntries &ae)
         }
     }
     else {
+        LOG_F(INFO, "append entires failed for follower #%d", ae.follower_no());
         next_index[ae.follower_no() - 1]--;
         replicate_log(ae.follower_no());
     }
@@ -499,6 +544,18 @@ void Server::replicate_log(int peer_no) {
     int peer_idx = peer_no - 1;
     if (peer_no == server_no || log.size() < next_index[peer_idx]) return;
 
+    /* new (snapshotting) */
+    LOG_F(INFO, "replicate log: peer #%d: next idx: %d, LII: %d", peer_no, 
+        next_index[peer_idx], persistent_storage.state().last_included_index());
+    if (next_index[peer_idx] <= 
+        persistent_storage.state().last_included_index()) {
+            LOG_F(INFO, "replicate_log: <send InstallSnapshot RPC here>");
+            //sendInstallSnapshotRPC;
+            // also remember to not call this again if we're in the middle of 
+            // sending the snapshot to the peer already 
+            return;
+        }
+
     RAFTmessage msg;
     AppendEntries* ae = new AppendEntries();
     msg.set_allocated_appendentries_message(ae);
@@ -508,7 +565,17 @@ void Server::replicate_log(int peer_no) {
     ae->set_leader_commit(commit_index);
     ae->set_prev_log_idx(next_index[peer_idx] - 1);
     if (next_index[peer_idx] - 1 > 0) {
-        ae->set_prev_log_term(log[next_index[peer_idx] - 1].term);
+        /* new (snapshotting): use last_included_term if needed. */
+        int last_incl_index = persistent_storage.state().last_included_index();
+        assert(next_index[peer_idx] - 1 >= last_incl_index);
+        if (next_index[peer_idx] - 1 == last_incl_index) { 
+            int term = persistent_storage.state().last_included_term();
+            LOG_F(INFO, "replicate_log(): reached special case, sending term %d",
+                  term);
+            ae->set_prev_log_term(term);
+        } else {
+            ae->set_prev_log_term(log[next_index[peer_idx] - 1].term);
+        }
     }
 
     // add log entries to request
@@ -542,7 +609,8 @@ void Server::broadcast_msg(const RAFTmessage &msg)
 
 
  /** 
-  * Update RAFT's current snapshot with a new one. 
+  * Update RAFT's current snapshot with a new one.  The state lock must be held
+  * before call.
   *
   * The steps are performed in a fault-tolerant way, such 
   * that the worst case is that a new snapshot was written but the system 
@@ -550,10 +618,16 @@ void Server::broadcast_msg(const RAFTmessage &msg)
   * Importantly, snapshots are never deleted unsafely. 
   */
   void Server::write_snapshot() {
+    // Edge case: this can happen during recovery. 
+    if (last_applied == persistent_storage.state().last_included_index()) {
+        return;
+    }
     // create alt snapshot
     string current_filename = persistent_storage.state().snapshot_filename();
-    string new_filename = (current_filename == "snapshot_a" ? 
-                                               "snapshot_b" : "snapshot_a");
+    string file_base = "server_" + std::to_string(server_no) + "_snapshot_";
+    string new_filename = (current_filename == file_base + "a" ? 
+                                               file_base + "b" : 
+                                               file_base + "a");
     /* Above, I've chosen an naming scheme that alternates between two names, 
        'a' and 'b'. The most natural solution is to choose a temporary name for
        the new snapshot, and then once it's written, delete the old snapshot 
@@ -568,6 +642,8 @@ void Server::broadcast_msg(const RAFTmessage &msg)
        always new).  */
     
     if (!state_machine->exportState(new_filename)) {
+        string msg = "write_snapshot(): " + string(strerror(errno));
+        LOG_F(INFO, "%s", msg.c_str());
         throw "write_snapshot(): " + string(strerror(errno));
     }
 
@@ -575,23 +651,25 @@ void Server::broadcast_msg(const RAFTmessage &msg)
     // note: must do last_applied instead of commit_index because we can only
     // snapshot safely once something is applied
 
-    /* to consider: could be cheeky if we do last_applied - 1 here. this would 
-       guarantee that there's always a physical committed log entry after the 
-       snapshot. thus, the log[0].term condition dissapears. 
-
-       new: I actually don't think this eliminates the need for log[0]
-    */
-    int idx = last_applied - 1;
+    int idx = last_applied;
+    int term = log[idx].term;
+    int prev_snapshot_size = persistent_storage.state().last_included_index();
     persistent_storage.state().set_last_included_index(idx);
-    persistent_storage.state().set_last_included_term(log[idx].term);
+    persistent_storage.state().set_last_included_term(term);
     persistent_storage.state().set_snapshot_filename(new_filename);
     persistent_storage.save();
+    LOG_F(INFO, "write_snapshot:() last included index is now %d, term is %d", 
+          idx, term);
 
     // delete the old snapshot
-    if (std::remove(current_filename.c_str()) != 0) {
-        throw "write_snapshot(): " + string(strerror(errno));
+    if (current_filename != "" && std::remove(current_filename.c_str()) != 0) {
+        string msg = "write_snapshot(): " + string(strerror(errno));
+        LOG_F(INFO, "%s", msg.c_str());
+        throw 5;
     }
 
+    LOG_F(INFO, "write_snapshot(): old phys log size: %d", log.physical_size());
     // delete log up through end of snapshot
-    // todo: figure out how to remove from the front of the log 
+    log.clip_front(idx - prev_snapshot_size); // 5/7: bugfix: use physical idx here, not logical 
+    LOG_F(INFO, "write_snapshot: new phys log size: %d", log.physical_size());
   }

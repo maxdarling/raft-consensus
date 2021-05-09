@@ -1,8 +1,13 @@
+#ifndef LOG_H
+#define LOG_H
+
 #include <string>
 #include <vector>
 #include <fstream>
 #include <unistd.h>
 #include <cstdio>
+#include <filesystem>
+#include "loguru/loguru.hpp"
 
 #include <iostream> // testing
 
@@ -152,11 +157,30 @@ void Log<T>::clip_front(int i) {
     *this = *new_log;
 
     // swap complete. now, delete old files and rename
-    std::remove(orig_logname.c_str());
-    std::remove(orig_tablename.c_str());
+    if (std::remove(orig_logname.c_str()) != 0 || 
+        std::remove(orig_tablename.c_str()) != 0) {
+        throw "Log::clip_front(): " + std::string(strerror(errno));
+    } else {
+        std::string msg = "files " + orig_logname + " and " + orig_tablename +
+                     " should have been deleted.";
+        //LOG_F(INFO, "%s", msg.c_str());
+    }
     // also not atomic and dangerous, allowing for now...
-    std::rename(log_file.c_str(), orig_logname.c_str());
-    std::rename(table_file.c_str(), orig_tablename.c_str());
+    if (size() != 0 && ( 
+        std::rename(log_file.c_str(), orig_logname.c_str()) != 0 || 
+        std::rename(table_file.c_str(), orig_tablename.c_str()) != 0)) {
+        throw "Log::clip_front(): " + std::string(strerror(errno));
+    } else {
+        std::string msg = log_file + " should have been renamed to " +
+                          orig_logname + " and " + table_file + " should have " 
+                          "been renamed to " + orig_tablename;
+        //LOG_F(INFO, "%s", msg.c_str());
+    }
+
+    // crucial: must restore files
+    // also not atomic and dangerous, allowing for now...
+    log_file = orig_logname;
+    table_file = orig_tablename;
 }
 
 /**
@@ -218,3 +242,5 @@ size_t Log<T>::log_file_pos(int entry_offset)
     }
     return bytes;
 }
+
+#endif /* !LOG_H */
