@@ -439,7 +439,12 @@ void Server::handler_InstallSnapshot(Messenger::Request &req,
         std::filesystem::rename(p/partially_installed_snapshot_filename, 
                                 p/new_filename);
         persistent_storage.state().set_snapshot_filename(new_filename); 
+        persistent_storage.state().set_last_included_index(is.last_included_index());
+        persistent_storage.state().set_last_included_term(is.last_included_term());
         persistent_storage.save();
+        last_applied = is.last_included_index();
+        commit_index = last_applied;
+        
         if (current_filename != "") {
             // todo: confusing that this starts empty in the protobuf. 
             // but also a little confusing to say we start w/ empty snapshot file
