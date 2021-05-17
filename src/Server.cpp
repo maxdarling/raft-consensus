@@ -1,7 +1,10 @@
 #include "Server.h"
+#include "RaftRPC.pb.h"
 #include <array>
+#include <filesystem>
 #include <string>
 #include <thread>
+#include <fstream>
 #include <unistd.h>
 
 /* In milliseconds. */
@@ -11,6 +14,12 @@ const int HEARTBEAT_TIMEOUT = 2000;
 
 /* The maximum allowed size of the physical log. */
 const int MAX_LOG_SIZE = 2;
+
+/* The size to which snapshots sent via InstallSnapshot should be segemented */
+const int CHUNK_SIZE = 100;
+
+/* Filename to use for in-construction snapshots from leader */
+const string partially_installed_snapshot_filename = "partial_snapshot";
 
 using std::optional, std::string, std::lock_guard, std::mutex;
 
@@ -146,6 +155,9 @@ void Server::handler_RAFTmessage(const RAFTmessage &msg,
         else if (msg.has_appendentries_message())
             handler_AppendEntries(*req, msg.appendentries_message());
 
+        else if (msg.has_installsnapshot_message())
+            handler_InstallSnapshot(*req, msg.installsnapshot_message());
+
         else if (msg.has_clientrequest_message())
             handler_ClientRequest(*req, msg.clientrequest_message());
     }
@@ -156,6 +168,9 @@ void Server::handler_RAFTmessage(const RAFTmessage &msg,
 
     else if (msg.has_appendentries_message())
         handler_AppendEntries_response(msg.appendentries_message());
+
+    else if (msg.has_installsnapshot_message()) 
+        handler_InstallSnapshot_response(msg.installsnapshot_message());
 }
 
 /*****************************************************************************
@@ -324,6 +339,126 @@ void Server::handler_AppendEntries(Messenger::Request &req,
     LOG_F(INFO, "follower: sent next index of %d to leader", new_entry_idx);
 }
 
+
+/**
+ *
+ */
+void Server::handler_InstallSnapshot(Messenger::Request &req, 
+                             const InstallSnapshot& is) {
+    LOG_F(INFO, "Called InstallSnapshot request handler");
+    /* 
+    implementation notes: 
+    -we always restart on offset 0 because it indicates a newer snapshot, 
+    whether the same or different leader as the current snapshot
+    */
+
+    RAFTmessage response;
+    InstallSnapshot *is_response = new InstallSnapshot();
+    response.set_allocated_installsnapshot_message(is_response);
+
+    lock_guard<mutex> lock(m);
+    response.set_term(current_term);
+    is_response->set_follower_no(server_no);
+    is_response->set_term(current_term);
+    is_response->set_done(is.done());
+
+    if (is.term() < current_term) {
+        LOG_F(INFO, "handler_InstallSnapshot: follower: received req. has stale term\n"
+                     "mine: %d, leader's: %d", current_term, is.term());
+        is_response->set_success(false);
+        req.sendResponse(response.SerializeAsString());
+        return;
+    }
+
+    // my deviation: reject if the snapshot is a prefix of the log
+    if (is.last_included_index() <= log.size()) {
+        is_response->set_success(false);
+        req.sendResponse(response.SerializeAsString());
+        return;
+    }    
+
+    /* handle checkup messages. the leader sends us the offset of the most 
+       recent chunk it sent us. if we haven't gotten that chunk yet, something
+       went went wrong, so reset. if we already got that chunk and are on a new
+       one, something also went wrong. note: both of these could be handled a 
+       little more intricately, but failing and retrying is simplest. 
+       
+       note: we're allowed to reason this way because of the TCP guarantee 
+       that messages are delivered in order sent, AND same with Messenger
+       (messages returned are in order of received) */
+    if (is.is_checkup()) {
+        bool success = (partially_installed_snapshot_offset == is.offset());
+        LOG_F(INFO, "handler_InstallSnapshot: received checkup message.\n"
+        "my ofs: %d, leader ofs: %d, success = %d", 
+        partially_installed_snapshot_offset, is.offset(), success);
+        is_response->set_success(success);
+        req.sendResponse(response.SerializeAsString());
+        return;
+    }
+
+    /* now we have a snapshot w/ chunk. bad cases: 
+       -we don't get the correct # snapshot. assuming correct TCP order, this
+       should only be possible if we crash midway through an install. */
+    if (is.offset() != 0 && partially_installed_snapshot_offset == -1) {
+        is_response->set_success(false);
+        req.sendResponse(response.SerializeAsString());
+        return;
+    }
+
+    // create a new file if it's the first chunk
+    int ofs_flags = std::ios::binary | 
+                    (is.offset() == 0 ? std::ios::trunc : std::ios::app);
+    std::ofstream ofs(partially_installed_snapshot_filename, ofs_flags);
+    if (!ofs) {
+        throw "handler_InstallSnapshot(): " + string(strerror(errno));
+    }
+    ofs << is.data();
+    ofs.close();
+    // update for future checkups
+    partially_installed_snapshot_offset = is.offset();
+
+    // if we're done, do finalizing stuff
+    if (is.done()) {
+        // discard the entire log
+        log.clear();
+        //replace current snapshot with this one. Note: the ordering here 
+        // matters: if we crash in between calls here, we end up with just
+        // the snapshot, but that's okay b/c a prefix of applied entires. 
+        // however, this is not the case if we only have the log, so it's state
+        // machine won't be correct, and many other bugs could occur. 
+
+        /* follow file-naming rule set in write_snapshot */
+        // todo: make this cleaner, unified w/ write_snapshot. 2 constants ?
+        string current_filename = persistent_storage.state().snapshot_filename(); 
+        string file_base = "server_" + std::to_string(server_no) + "_snapshot_";
+        string new_filename = (current_filename == file_base + "a" ? 
+                                                file_base + "b" : 
+                                                file_base + "a");
+
+        std::filesystem::path p = std::filesystem::current_path();
+        std::filesystem::rename(p/partially_installed_snapshot_filename, 
+                                p/new_filename);
+        persistent_storage.state().set_snapshot_filename(new_filename); 
+        persistent_storage.save();
+        if (current_filename != "") {
+            // todo: confusing that this starts empty in the protobuf. 
+            // but also a little confusing to say we start w/ empty snapshot file
+            // probably do this, though (and fix in below in write_snapshot)
+            std::filesystem::remove(p/current_filename);
+        }
+
+        // apply the changes to the state machine (import)
+        state_machine->importState(new_filename);
+
+        // mark that we're done with install
+        partially_installed_snapshot_offset = -1;
+        LOG_F(INFO, "handler_InstallSnapshot: done with Install!");
+    } 
+
+    is_response->set_success(true);
+    req.sendResponse(response.SerializeAsString());
+}
+
 /**
  * If not leader, re-route client request to leader.
  * If leader, add client request to queue and send AppendEntries RPCs to peers.
@@ -384,6 +519,7 @@ void Server::handler_RequestVote_response(const RequestVote &rv)
         send_heartbeats();
         next_index.assign(server_addrs.size(), log.size() + 1);
         match_index.assign(server_addrs.size(), 0);
+        last_sent_snapshot_offset.assign(server_addrs.size(), -1);
     }
 }
 
@@ -418,6 +554,45 @@ void Server::handler_AppendEntries_response(const AppendEntries &ae)
         next_index[ae.follower_no() - 1]--;
         replicate_log(ae.follower_no());
     }
+}
+
+
+/**
+* If leader, continue sending snapshots to follower. 
+*/
+void Server::handler_InstallSnapshot_response(const InstallSnapshot& is) {
+    LOG_F(INFO, "Called InstallSnapshot response handler");
+    /* 
+    implementation notes: 
+    - philosophy: happily fail and retry if something's off. no intricate 
+    handling. 
+    */
+    lock_guard<mutex> lock(m);
+    if (server_state != LEADER) return;
+    int peer_idx = is.follower_no() - 1;
+    if (!is.success()) {
+        LOG_F(INFO, "InstallSnapshot: follower returned unsuccessfully");
+        // there was a problem, so abort the current install.
+        last_sent_snapshot_offset[peer_idx] = -1;
+        return;
+    }
+    if (is.done()) {
+        LOG_F(INFO, "InstallSnapshot: follower is DONE with install!");
+        // install complete, erase from map
+        last_sent_snapshot_offset[peer_idx] = -1;
+        // update their next_index and match_index
+        int lii = persistent_storage.state().last_included_index(); 
+        next_index[peer_idx] = lii + 1;
+        match_index[peer_idx] = lii;
+        return;
+    }
+
+    // send the next chunk
+    int offset = last_sent_snapshot_offset[peer_idx] + CHUNK_SIZE;    
+    last_sent_snapshot_offset[peer_idx] = offset;
+    RAFTmessage msg = construct_InstallSnapshot(offset, false);
+    messenger.sendRequest(server_addrs[peer_idx + 1], msg.SerializeAsString());
+    LOG_F(INFO, "InstallSnapshot: sent chunk w/ offset %d", offset);
 }
 
 /*****************************************************************************
@@ -547,14 +722,26 @@ void Server::replicate_log(int peer_no) {
     /* new (snapshotting) */
     LOG_F(INFO, "replicate log: peer #%d: next idx: %d, LII: %d", peer_no, 
         next_index[peer_idx], persistent_storage.state().last_included_index());
+    /* InstallSnapshot send condition */
     if (next_index[peer_idx] <= 
         persistent_storage.state().last_included_index()) {
-            LOG_F(INFO, "replicate_log: <send InstallSnapshot RPC here>");
-            //sendInstallSnapshotRPC;
-            // also remember to not call this again if we're in the middle of 
-            // sending the snapshot to the peer already 
-            return;
+
+        // either initiate the installation process, or send a checkup
+        bool checkup = true;
+        if (last_sent_snapshot_offset[peer_idx] == -1) {
+            checkup = false;
+            last_sent_snapshot_offset[peer_idx] = 0;
         }
+        int offset = last_sent_snapshot_offset[peer_idx];
+        RAFTmessage msg = construct_InstallSnapshot(offset, checkup);
+        messenger.sendRequest(server_addrs[peer_no], 
+                              msg.SerializeAsString()); 
+        string log_msg = (checkup ?  
+                          "replicate_log: sent InstallSnapshot checkup" : 
+                          "replicate_log: sent initial InstallSnapshot");
+        LOG_F(INFO, "%s", log_msg.c_str()); 
+        return;
+    }
 
     RAFTmessage msg;
     AppendEntries* ae = new AppendEntries();
@@ -618,6 +805,15 @@ void Server::broadcast_msg(const RAFTmessage &msg)
   * Importantly, snapshots are never deleted unsafely. 
   */
   void Server::write_snapshot() {
+    if (server_state == LEADER) {
+        // special case: if we snapshot while other installs are happening, wipe
+        // all of them out and start over. this is simpler than waiting to
+        // finish the installs in some way, although less efficient. however,
+        // it's such a rare ocurrence that I prefer the simplicity tradeoff 
+        std::fill(last_sent_snapshot_offset.begin(), 
+                  last_sent_snapshot_offset.end(), 
+                  -1);
+    }
     // Edge case: this can happen during recovery. 
     if (last_applied == persistent_storage.state().last_included_index()) {
         return;
@@ -662,6 +858,7 @@ void Server::broadcast_msg(const RAFTmessage &msg)
           idx, term);
 
     // delete the old snapshot
+    // todo: use std::filesystem functions (more modern) (also do this for log.h)
     if (current_filename != "" && std::remove(current_filename.c_str()) != 0) {
         string msg = "write_snapshot(): " + string(strerror(errno));
         LOG_F(INFO, "%s", msg.c_str());
@@ -673,3 +870,35 @@ void Server::broadcast_msg(const RAFTmessage &msg)
     log.clip_front(idx - prev_snapshot_size); // 5/7: bugfix: use physical idx here, not logical 
     LOG_F(INFO, "write_snapshot: new phys log size: %d", log.physical_size());
   }
+
+
+/**
+ * Construct an InstallSnapshot RPC, setting all fields except 'data', which is 
+ * only done when 'checkup' is false.  
+ *
+ * The state lock should be held during this call. 
+ */
+RAFTmessage Server::construct_InstallSnapshot(int offset, bool is_checkup) {
+    RAFTmessage msg;
+    InstallSnapshot *is_req = new InstallSnapshot();
+    msg.set_allocated_installsnapshot_message(is_req);
+    msg.set_term(current_term);
+    is_req->set_term(current_term);
+    is_req->set_leader_no(server_no);
+    auto& ps = persistent_storage.state();
+    is_req->set_last_included_index(ps.last_included_index());
+    is_req->set_last_included_term(ps.last_included_term());
+    
+    char buffer[CHUNK_SIZE];
+    bool done = false;
+    if (readFileChunk(ps.snapshot_filename(), buffer, offset, CHUNK_SIZE)) {
+        // eof, so this is the last chunk
+        done = true;
+    }
+
+    is_req->set_offset(offset);
+    is_req->set_data(string(buffer));
+    is_req->set_done(done);
+    is_req->set_is_checkup(false);
+    return msg;
+}

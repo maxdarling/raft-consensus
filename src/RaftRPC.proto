@@ -37,6 +37,24 @@ message RequestVote {
     bool vote_granted = 6;
 }
 
+message InstallSnapshot {
+    /* SHARED FIELD */
+    int32 term = 1;
+    bool done = 2;
+
+    /* REQUEST FIELD */
+    int32 leader_no = 3;
+    int32 last_included_index = 4;
+    int32 last_included_term = 5;
+    int32 offset = 6;
+    string data = 7;
+    bool is_checkup = 8;
+
+    /* RESPONSE FIELDS */
+    int32 follower_no = 9;
+    bool success = 10;
+}
+
 message ClientRequest {
     /* REQUEST FIELD */
     string command = 1;
@@ -52,5 +70,6 @@ message RAFTmessage {
     int32 term = 1;
     AppendEntries AppendEntries_message = 2;
     RequestVote RequestVote_message = 3;
-    ClientRequest ClientRequest_message = 4;
+    InstallSnapshot InstallSnapshot_message = 4;
+    ClientRequest ClientRequest_message = 5;
 }

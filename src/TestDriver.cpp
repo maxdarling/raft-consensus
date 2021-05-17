@@ -1,16 +1,20 @@
+#include <cstring>
+#include <memory>
 #include <stdio.h>
 #include <poll.h>
 #include <thread>
 #include <iostream>
 #include <unistd.h>
+#include <filesystem>
 
 #include "Messenger.h"
-
 #include "Log.h"
 #include "RaftLog.h"
+#include "util.h"
 
 #include <sys/types.h>          /* See NOTES */
 #include <sys/socket.h>
+#include <utility>
 #include "loguru/loguru.hpp"
 
 using std::cout;
@@ -189,6 +193,48 @@ void test_log() {
 }
 
 
+void fileChunkTest() { 
+    string outfile = "test_output";
+
+    string path = std::filesystem::current_path();
+    std::string filename = path + "/src/test";
+    int chunk_size = 10;
+    size_t offset = 0;
+    while (true) {
+        char buffer [chunk_size];
+        memset(buffer, '\0', sizeof(buffer));
+        bool eof = readFileChunk(filename, buffer, offset, chunk_size);
+        offset += chunk_size;
+        cout << "buffer contents: " << string(buffer) << std::endl;
+        cout << endl;
+
+        // append to file
+        std::ofstream ofs(outfile, std::ios::app|std::ios::binary);
+        ofs << string(buffer);
+        ofs.close();
+
+        if (eof) {
+            break;
+        }
+    }
+}
+
+void filesystem_test() { 
+    std::filesystem::path p = std::filesystem::current_path();
+    cout << "current path: " << endl << p << endl;
+
+    try {
+        std::filesystem::rename(p/"test", p/"twest");
+    }
+    catch(std::exception& e) {
+        cout << e.what() << endl; 
+        return;
+    }
+
+
+}
+
+
 int main(int argc, char* argv[])
 {
     //int serverNumber = std::stoi(argv[1]);
@@ -196,7 +242,9 @@ int main(int argc, char* argv[])
     //client_server(serverNumber);
 
     //test_log();
-    test_raft_log();
+    //test_raft_log();
+    //fileChunkTest();
+    filesystem_test();
 
     return 0;
 }
