@@ -35,17 +35,17 @@ int parsePort(std::string hostAndPort) {
 
 
 /**
- * Read 'count' bytes from 'filename' at the specified offset into the buffer
+ * Read up to 'count' bytes from 'filename' at the specified offset into the buffer
  * starting at 'buf'. Less than 'count' bytes will be read if the end of the 
  * file is reached. 
  * 
- * Returns true if the end of the file was reached, false otheriwse.  
- * 
+ * Returns the number of bytes read, or 0, indicating an EOF.
+ *
  * If 'count' + 'offset' is past the end of the file, this function will read 
- * to the end of the file instead. If 'offset' is past the end of the file, or 
- * the file cannot be opened, an exception is thrown.
+ * to the end of the file instead. If 'offset' is past the end of the file, 0 
+ * is returned. If the file cannot be opened, an exception is thrown.
  */
-bool readFileChunk(string filename, char *buf, size_t offset, size_t count) {
+int readFileChunk(string filename, char *buf, size_t offset, size_t count) {
     std::ifstream is (filename, std::ios::binary);
     if (!is) {
         string msg = "readFileChunk(): " + string(strerror(errno));
@@ -59,8 +59,7 @@ bool readFileChunk(string filename, char *buf, size_t offset, size_t count) {
     std::cout << "file is " << file_len << " bytes long" << std::endl; 
     if (offset >= file_len) {
         string msg = "readFileChunk(): 'offset' is past the end of the file"; 
-        std::cout << msg << std::endl;
-        throw msg;
+        return 0;
     }
 
     is.seekg (offset, is.beg);
@@ -71,5 +70,5 @@ bool readFileChunk(string filename, char *buf, size_t offset, size_t count) {
 
     std::cout << "read " << bytesRead << " of " << count << " bytes from file, "
     "starting at offset " << offset << std::endl;
-    return is.eof() || (offset + bytesRead >= file_len);
+    return bytesRead;
 }

@@ -203,13 +203,12 @@ void fileChunkTest() {
     size_t offset = 0;
     while (true) {
         char buffer [chunk_size];
-        memset(buffer, '\0', sizeof(buffer));
-        bool eof = readFileChunk(filename, buffer, offset, chunk_size);
+        int bytesRead = readFileChunk(filename, buffer, offset, chunk_size);
         offset += chunk_size;
-        cout << "buffer contents: " << string(buffer) << std::endl;
+        cout << "buffer contents: " << string(buffer, bytesRead) << std::endl;
         cout << endl;
         InstallSnapshot* is = new InstallSnapshot();
-        is->set_data(string(buffer));
+        is->set_data(string(buffer, bytesRead));
 
 
         // append to file
@@ -218,7 +217,7 @@ void fileChunkTest() {
         ofs << is->data();
         ofs.close();
 
-        if (eof) {
+        if (bytesRead == 0) { // or < CHUNK_SIZE
             break;
         }
     }

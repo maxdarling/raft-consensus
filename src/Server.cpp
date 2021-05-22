@@ -895,18 +895,17 @@ RAFTmessage Server::construct_InstallSnapshot(int offset, bool is_checkup) {
     is_req->set_last_included_index(ps.last_included_index());
     is_req->set_last_included_term(ps.last_included_term());
     
-    char buffer[CHUNK_SIZE + 1];
-    memset(buffer, '\0', sizeof(buffer));
+    char buffer[CHUNK_SIZE];
     bool done = false;
-    if (readFileChunk(ps.snapshot_filename(), buffer, offset, CHUNK_SIZE)) {
-        // eof, so this is the last chunk
-        LOG_F(INFO, "EOF reached, must be last chunk");
+    int bytesRead = 
+        readFileChunk(ps.snapshot_filename(), buffer, offset, CHUNK_SIZE);
+    if (bytesRead < CHUNK_SIZE) {
+        LOG_F(INFO, "construct_InstSnap: sending last chunk");
         done = true;
     }
-    LOG_F(INFO, "buffer contents: %s", string(buffer).c_str());
 
     is_req->set_offset(offset);
-    is_req->set_data(string(buffer));
+    is_req->set_data(string(buffer, bytesRead));
     is_req->set_done(done);
     is_req->set_is_checkup(false);
     return msg;
