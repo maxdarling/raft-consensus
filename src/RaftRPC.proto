@@ -47,7 +47,7 @@ message InstallSnapshot {
     int32 last_included_index = 4;
     int32 last_included_term = 5;
     int32 offset = 6;
-    string data = 7;
+    bytes data = 7;
     bool is_checkup = 8;
 
     /* RESPONSE FIELDS */

@@ -11,6 +11,7 @@
 #include "Log.h"
 #include "RaftLog.h"
 #include "util.h"
+#include "RaftRPC.pb.h"
 
 #include <sys/types.h>          /* See NOTES */
 #include <sys/socket.h>
@@ -197,8 +198,8 @@ void fileChunkTest() {
     string outfile = "test_output";
 
     string path = std::filesystem::current_path();
-    std::string filename = path + "/src/test";
-    int chunk_size = 10;
+    std::string filename = path + "/test";
+    int chunk_size = 2;
     size_t offset = 0;
     while (true) {
         char buffer [chunk_size];
@@ -207,10 +208,14 @@ void fileChunkTest() {
         offset += chunk_size;
         cout << "buffer contents: " << string(buffer) << std::endl;
         cout << endl;
+        InstallSnapshot* is = new InstallSnapshot();
+        is->set_data(string(buffer));
+
 
         // append to file
         std::ofstream ofs(outfile, std::ios::app|std::ios::binary);
-        ofs << string(buffer);
+        //ofs << string(buffer);
+        ofs << is->data();
         ofs.close();
 
         if (eof) {
@@ -243,8 +248,8 @@ int main(int argc, char* argv[])
 
     //test_log();
     //test_raft_log();
-    //fileChunkTest();
-    filesystem_test();
+    fileChunkTest();
+    //filesystem_test();
 
     return 0;
 }

@@ -48,7 +48,9 @@ int parsePort(std::string hostAndPort) {
 bool readFileChunk(string filename, char *buf, size_t offset, size_t count) {
     std::ifstream is (filename, std::ios::binary);
     if (!is) {
-        throw "readFileChunk(): " + string(strerror(errno));
+        string msg = "readFileChunk(): " + string(strerror(errno));
+        std::cout << msg << std::endl;
+        throw msg; 
     };
     
     // first, get the length of the file
@@ -56,7 +58,9 @@ bool readFileChunk(string filename, char *buf, size_t offset, size_t count) {
     int file_len = is.tellg();
     std::cout << "file is " << file_len << " bytes long" << std::endl; 
     if (offset >= file_len) {
-        throw "readFileChunk(): 'offset' is past the end of the file";
+        string msg = "readFileChunk(): 'offset' is past the end of the file"; 
+        std::cout << msg << std::endl;
+        throw msg;
     }
 
     is.seekg (offset, is.beg);
@@ -67,5 +71,5 @@ bool readFileChunk(string filename, char *buf, size_t offset, size_t count) {
 
     std::cout << "read " << bytesRead << " of " << count << " bytes from file, "
     "starting at offset " << offset << std::endl;
-    return is.eof();
+    return is.eof() || (offset + bytesRead >= file_len);
 }

@@ -16,7 +16,7 @@ const int HEARTBEAT_TIMEOUT = 2000;
 const int MAX_LOG_SIZE = 2;
 
 /* The size to which snapshots sent via InstallSnapshot should be segemented */
-const int CHUNK_SIZE = 100;
+const int CHUNK_SIZE = 2;
 
 /* Filename to use for in-construction snapshots from leader */
 const string partially_installed_snapshot_filename = "partial_snapshot";
@@ -413,6 +413,7 @@ void Server::handler_InstallSnapshot(Messenger::Request &req,
         throw "handler_InstallSnapshot(): " + string(strerror(errno));
     }
     ofs << is.data();
+    LOG_F(INFO, "buffer contents: %s", is.data().c_str());
     ofs.close();
     // update for future checkups
     partially_installed_snapshot_offset = is.offset();
@@ -894,12 +895,15 @@ RAFTmessage Server::construct_InstallSnapshot(int offset, bool is_checkup) {
     is_req->set_last_included_index(ps.last_included_index());
     is_req->set_last_included_term(ps.last_included_term());
     
-    char buffer[CHUNK_SIZE];
+    char buffer[CHUNK_SIZE + 1];
+    memset(buffer, '\0', sizeof(buffer));
     bool done = false;
     if (readFileChunk(ps.snapshot_filename(), buffer, offset, CHUNK_SIZE)) {
         // eof, so this is the last chunk
+        LOG_F(INFO, "EOF reached, must be last chunk");
         done = true;
     }
+    LOG_F(INFO, "buffer contents: %s", string(buffer).c_str());
 
     is_req->set_offset(offset);
     is_req->set_data(string(buffer));
