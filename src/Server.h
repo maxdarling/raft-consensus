@@ -83,6 +83,10 @@ class Server {
     unordered_map<int, std::string> server_addrs;
     /* Name of this instance's state recovery file. */
     std::string recovery_file;
+    /* snapshotting: snapshot filenames choices for this particular server */
+    std::vector<string> snapshot_filename_options;
+    /* snapshotting: designated filename for in-progress InstallSnapshots */
+    std::string partially_installed_snapshot_filename;
     /* snapshotting: current progress in an InstallSnapshot sequence */
     int partially_installed_snapshot_offset {-1};
 

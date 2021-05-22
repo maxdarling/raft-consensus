@@ -126,7 +126,10 @@ void Log<T>::trunc(int new_size)
 
 /**
  * Remove all entries from the start of the log up to and including the entry 
- * at index'i'. 
+ * at index 'i'. 
+ * 
+ * Note: this operation is NOT fault-tolerant. If a crash occurs during 
+ * during the call, the log may be lost or corrupted.  
  */
 template <typename T>
 void Log<T>::clip_front(int i) {
@@ -151,7 +154,7 @@ void Log<T>::clip_front(int i) {
         new_log->append((*this)[idx]);
     }
 
-    // the log is done, so replace the files (not atomic! allowing for now...)
+    // the log is done, so replace the files
     std::string orig_logname = log_file;
     std::string orig_tablename = table_file;
     *this = *new_log;
@@ -163,9 +166,7 @@ void Log<T>::clip_front(int i) {
     } else {
         std::string msg = "files " + orig_logname + " and " + orig_tablename +
                      " should have been deleted.";
-        //LOG_F(INFO, "%s", msg.c_str());
     }
-    // also not atomic and dangerous, allowing for now...
     if (size() != 0 && ( 
         std::rename(log_file.c_str(), orig_logname.c_str()) != 0 || 
         std::rename(table_file.c_str(), orig_tablename.c_str()) != 0)) {
@@ -174,11 +175,9 @@ void Log<T>::clip_front(int i) {
         std::string msg = log_file + " should have been renamed to " +
                           orig_logname + " and " + table_file + " should have " 
                           "been renamed to " + orig_tablename;
-        //LOG_F(INFO, "%s", msg.c_str());
     }
 
     // crucial: must restore files
-    // also not atomic and dangerous, allowing for now...
     log_file = orig_logname;
     table_file = orig_tablename;
 }
