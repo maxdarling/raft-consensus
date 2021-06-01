@@ -343,16 +343,14 @@ void Server::handler_AppendEntries(Messenger::Request &req,
 
 
 /**
- *
+ * Process and reply to InstallSnapshot RPCs from leader. 
  */
 void Server::handler_InstallSnapshot(Messenger::Request &req, 
                              const InstallSnapshot& is) {
     LOG_F(INFO, "Called InstallSnapshot request handler");
-    /* 
-    implementation notes: 
-    -we always restart on offset 0 because it indicates a newer snapshot, 
-    whether the same or different leader as the current snapshot
-    */
+    /* implementation note:
+    -we always restart the process when receiving a request with offset 0
+    because it indicates a newer snapshot, whether or not it's a new leader */
 
     RAFTmessage response;
     InstallSnapshot *is_response = new InstallSnapshot();
@@ -866,6 +864,7 @@ void Server::broadcast_msg(const RAFTmessage &msg)
     // delete log up through end of snapshot
     log.clip_front(idx - prev_snapshot_size); // note: this is a physical index
     persistent_storage.state().set_can_safely_recover_log(true);
+    persistent_storage.save();
     LOG_F(INFO, "write_snapshot: new phys log size: %d", log.physical_size());
   }
 

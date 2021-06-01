@@ -23,13 +23,15 @@
         - if the Log is a private member and this class isn't people will 
         mistakenly use Log for sure. 
 */
+
+
 /** 
- * A helper wrapper class over a Log. The purpose of this class is to allow 
- * the proceeding raft code to work in terms of the log's LOGICAL size and 
- * index, which, due to snapshotting, is different than the size and index
- * of the physical log. This class peforms the translations so that the programmer
- * may think in terms of the logical indices, not physical ones. This is helpful
- * as servers MUST communicate in terms of the logical indices. 
+ * A wrapper class over a 'Log', whose purpose is solely to allow the raft code
+ * to work in terms of the log's LOGICAL size and index, which, due to
+ * snapshotting, is different than the size and index of the PHYSICAL log. This
+ * class peforms the translations so that the programmer may think in terms of
+ * the logical indices, not physical ones. This is helpful as servers must
+ * communicate in terms of the logical indices. 
  */  
 class RaftLog {
 
@@ -41,42 +43,15 @@ class RaftLog {
         RaftLog(Log<LogEntry>* log, PersistentStorage& ps) : 
             _phys_log(*log), _ps(ps) {};
 
-        /* mimicked Log API */
-        void clear() { _phys_log.clear(); }
 
-        /* Note: I've removed the optional offset argument. It orignallly was a 
-         * minor optimization to load only up from 'last_applied' elements into
-         * the cache. However, this no longer makes sense in the snapshot case, 
-         * because 'last_applied' must be set to 'last_included_index'. */ 
-        void recover() { 
-            _phys_log.recover(0);
-        }
+        /**********************************************************************
+        *                          UPDATED LOG API                            *
+        ***********************************************************************/
 
-        void trunc(int new_size) { 
-            _phys_log.trunc(new_size - _ps.state().last_included_index()); 
-        }
 
-        /** 
-         * Note: 'i' is a physical index! 
-         * Todo: this should probably be logical for consistency's sake, but 
-         * it's unclear how get that to work in Server code (write_snapshot())
+        /**
+         * Return the log entry at logical index 'i'. 
          */
-        void clip_front(int i) {
-            _phys_log.clip_front(i);
-        }
-
-        void append(const LogEntry& entry) { _phys_log.append(entry); }
-
-        int size() const { 
-            return _phys_log.size() + _ps.state().last_included_index();
-        };
-
-        int physical_size() const {
-            return _phys_log.size();
-        }
-
-        bool empty() const { return size() == 0; }
-
         LogEntry operator[](int i) {
             int phys_idx = i - _ps.state().last_included_index();
             if (phys_idx <= 0) {
@@ -84,6 +59,59 @@ class RaftLog {
             }
             return _phys_log[phys_idx];
         }
+
+        /**
+         * Return the physical log size in bytes. 
+         */
+        int physical_size() const {
+            return _phys_log.size();
+        }
+
+        /**
+         * Return the logical log size in bytes. 
+         */
+        int size() const { 
+            return _phys_log.size() + _ps.state().last_included_index();
+        };
+
+        /**
+         * Truncate the log to the new logical size 'new_size'. 
+         */
+        void trunc(int new_size) { 
+            _phys_log.trunc(new_size - _ps.state().last_included_index()); 
+        }
+
+
+        /**********************************************************************
+        *                        IDENTICAL LOG API                            *
+        ***********************************************************************/
+
+
+        void clear() { _phys_log.clear(); }
+
+        void recover() { 
+            /* Note: I've removed the optional offset argument. It orignally was
+             * a minor optimization to load only up from 'last_applied' elements
+             * into the cache. However, this notion no longer makes sense in the
+             * snapshot case, because 'last_applied' must be set to
+             * 'last_included_index'. */
+            _phys_log.recover(0);
+        }
+
+        /**
+         * Remove all entries from the start of the log up to and including the
+         * entry at index PHYSICAL 'i'. 
+         * 
+         * Design note: this was determined to be less confusing to than using a
+         * logical index after some deliberation. 
+         */
+        void clip_front(int i) {
+            _phys_log.clip_front(i);
+        }
+
+        void append(const LogEntry& entry) { _phys_log.append(entry); }
+
+        bool empty() const { return size() == 0; }
         
     private:
         Log<LogEntry>& _phys_log;
