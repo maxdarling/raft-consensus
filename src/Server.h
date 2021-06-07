@@ -1,7 +1,7 @@
 #include "Messenger.h"
 #include "TimedCallback.h"
-#include "Log.h"
 #include "PersistentStorage.h"
+#include "RaftLog.h"
 #include "util.h"
 #include "loguru/loguru.hpp"
 #include "RaftRPC.pb.h"
@@ -23,11 +23,6 @@ class Server {
       FOLLOWER,
       CANDIDATE,
       LEADER
-    };
-
-    struct LogEntry {
-      std::string command;
-      int term;
     };
 
     /* Client requests only receive responses from the leader after the
@@ -61,7 +56,7 @@ class Server {
     /* PERSISTENT STATE */
     int current_term {0};
     Vote vote {-1, -1};
-    Log<LogEntry> log;
+    RaftLog log;
 
     /* VOLATILE STATE ON ALL SERVERS */
     int commit_index {0};
@@ -70,6 +65,9 @@ class Server {
     /* VOLATILE STATE ON LEADERS */
     std::vector<int> next_index;
     std::vector<int> match_index;
+    /* snapshotting: stores the offset of the most recent snapshot chunk that
+     * should have been received by each peer. -1 if no install in progress. */ 
+    std::vector<int> last_sent_snapshot_offset;
 
     /* ADDITIONAL STATE */
     int server_no;
@@ -85,6 +83,12 @@ class Server {
     unordered_map<int, std::string> server_addrs;
     /* Name of this instance's state recovery file. */
     std::string recovery_file;
+    /* snapshotting: snapshot filenames choices for this particular server */
+    std::vector<string> snapshot_filename_options;
+    /* snapshotting: designated filename for in-progress InstallSnapshots */
+    std::string partially_installed_snapshot_filename;
+    /* snapshotting: current progress in an InstallSnapshot sequence */
+    int partially_installed_snapshot_offset {-1};
 
     /* UTIL. See the files that implement these classes for descriptions. */
     PersistentStorage persistent_storage;
@@ -100,12 +104,15 @@ class Server {
         const RequestVote &rv);
     void handler_AppendEntries(Messenger::Request &req, 
         const AppendEntries &ae);
+    void handler_InstallSnapshot(Messenger::Request &req, 
+        const InstallSnapshot& is);
     void handler_ClientRequest(Messenger::Request &req, 
         const ClientRequest &cr);
 
     /* RPC RESPONSE HANDLERS */
     void handler_RequestVote_response(const RequestVote &rv);
     void handler_AppendEntries_response(const AppendEntries &ae);
+    void handler_InstallSnapshot_response(const InstallSnapshot& is);
 
     /* TIMED CALLBACKS */
     void start_election();
@@ -117,4 +124,8 @@ class Server {
     /* HELPER FUNCTIONS */
     void replicate_log(int peer_no);
     void broadcast_msg(const RAFTmessage &msg);
+    RAFTmessage construct_InstallSnapshot(int offset, bool is_checkup);
+
+    /* SNAPSHOTTING */
+    void write_snapshot();
 };

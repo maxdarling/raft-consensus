@@ -1,4 +1,7 @@
-#include "RaftRPC.pb.h"
+#ifndef PERSISTENT_STORAGE_H
+#define PERSISTENT_STORAGE_H
+
+#include "RaftPersistentState.pb.h"
 #include <fstream>
 
 
@@ -57,3 +60,5 @@ class PersistentStorage {
             } 
     };
 };
+
+#endif /* !PERISTENT_STORAGE_H */

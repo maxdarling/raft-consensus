@@ -1,5 +1,6 @@
 #include "util.h"
 #include <fstream>
+#include <iostream> // debugging
 
 /**
  * Parses a server address file into a map from server number to address.
@@ -30,4 +31,44 @@ std::unordered_map<int, std::string> parseClusterInfo(std::string serverFilePath
  */
 int parsePort(std::string hostAndPort) {
     return std::stoi(hostAndPort.substr(hostAndPort.find(":") + 1));
+}
+
+
+/**
+ * Read up to 'count' bytes from 'filename' at the specified offset into the buffer
+ * starting at 'buf'. Less than 'count' bytes will be read if the end of the 
+ * file is reached. 
+ * 
+ * Returns the number of bytes read, or 0, indicating an EOF.
+ *
+ * If 'count' + 'offset' is past the end of the file, this function will read 
+ * to the end of the file instead. If 'offset' is past the end of the file, 0 
+ * is returned. If the file cannot be opened, an exception is thrown.
+ */
+int readFileChunk(string filename, char *buf, size_t offset, size_t count) {
+    std::ifstream is (filename, std::ios::binary);
+    if (!is) {
+        string msg = "readFileChunk(): " + string(strerror(errno));
+        std::cout << msg << std::endl;
+        throw msg; 
+    };
+    
+    // first, get the length of the file
+    is.seekg(0, is.end);
+    int file_len = is.tellg();
+    std::cout << "file is " << file_len << " bytes long" << std::endl; 
+    if (offset >= file_len) {
+        string msg = "readFileChunk(): 'offset' is past the end of the file"; 
+        return 0;
+    }
+
+    is.seekg (offset, is.beg);
+    is.read (buf, count);
+    // ifstream::read API quirk: no return value on # of bytes read, must calc
+    size_t bytesRead = (is.eof() ? file_len - offset : count);
+    is.close();
+
+    std::cout << "read " << bytesRead << " of " << count << " bytes from file, "
+    "starting at offset " << offset << std::endl;
+    return bytesRead;
 }

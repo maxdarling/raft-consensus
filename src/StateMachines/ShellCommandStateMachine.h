@@ -29,4 +29,11 @@ class ShellCmdStateMachine : public StateMachine {
         }
         return result;
     }
+
+    
+    /* There's no true state to this state machine as it's too difficult to
+     * define the state of a shell environment after a series of commands, so
+     * these functions are not implemented meaningfully. */
+    bool exportState(string filename) { return true; }
+    bool importState(string filename) { return true; }
 };

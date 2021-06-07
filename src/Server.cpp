@@ -1,13 +1,27 @@
 #include "Server.h"
+#include "RaftRPC.pb.h"
 #include <array>
+#include <filesystem>
+#include <string>
 #include <thread>
+#include <fstream>
+#include <unistd.h>
 
 /* In milliseconds. */
 const int ELECTION_TIMEOUT_LOWER_BOUND = 5000;
 const int ELECTION_TIMEOUT_UPPER_BOUND = 10000;
 const int HEARTBEAT_TIMEOUT = 2000;
 
+/* The maximum allowed size of the physical log. */
+const int MAX_LOG_SIZE = 2;
+
+/* The size to which snapshots sent via InstallSnapshot should be segemented */
+const int CHUNK_SIZE = 2;
+
 using std::optional, std::string, std::lock_guard, std::mutex;
+
+
+
 
 /*****************************************************************************
  *                              PUBLIC INTERFACE                             *
@@ -24,9 +38,9 @@ Server::Server(const int _server_no, const string cluster_file,
                StateMachine *_state_machine, bool restarting)
   : state_machine(_state_machine), 
     log_file("log" + std::to_string(_server_no)),
-    log(log_file, 
+    log(new Log<RaftLog::LogEntry>(log_file, 
         /* serialize LogEntry to string */
-        [](const LogEntry &entry) {
+        [](const RaftLog::LogEntry &entry) {
             return std::to_string(entry.term) + " " + entry.command;
         },
         /* deserialize LogEntry from string */
@@ -34,19 +48,24 @@ Server::Server(const int _server_no, const string cluster_file,
             size_t delimiter_idx = entry_str.find(" ");
             int term = std::stoi(entry_str.substr(0, delimiter_idx));
             string command = entry_str.substr(delimiter_idx + 1);
-            return LogEntry {command, term};
+            return RaftLog::LogEntry {command, term};
         }
-    ),
+    ),persistent_storage),
     server_no(_server_no),
     server_addrs(parseClusterInfo(cluster_file)),
     recovery_file("server" + std::to_string(server_no) + "_state"),
+    snapshot_filename_options(
+        {"server_" + std::to_string(server_no) + "_snapshot_a",
+        "server_" + std::to_string(server_no) + "_snapshot_b"}),
+    partially_installed_snapshot_filename(
+        "server_" + std::to_string(server_no) + "_partial_snapshot"),
     persistent_storage(recovery_file),
     messenger(parsePort(server_addrs[server_no])),
     election_timer(ELECTION_TIMEOUT_LOWER_BOUND, ELECTION_TIMEOUT_UPPER_BOUND, 
                    std::bind(&Server::start_election, this)),
     heartbeat_timer(HEARTBEAT_TIMEOUT, 
-                    std::bind(&Server::send_heartbeats, this)) 
-{
+                    std::bind(&Server::send_heartbeats, this))
+    {
     if (restarting) {
         // recover persistent state
         LOG_F(INFO, "S%d recovering state from file", server_no);
@@ -54,16 +73,32 @@ Server::Server(const int _server_no, const string cluster_file,
         ServerPersistentState &sps = persistent_storage.state();
         current_term = sps.current_term();
         if (sps.voted_for() != 0) vote = {sps.term_voted(), sps.voted_for()};
-        last_applied = sps.last_applied();
+
+        // new (snapshotting):
+        if (!state_machine->importState(sps.snapshot_filename())) {
+            throw "Server::Server(): could not recover state machine: " +
+            string(strerror(errno));
+        }
+        /* note: while formerly we could reset to 0, it's now necessary to
+         * recover last_applied. can't get away with setting it to zero or we'll
+         * have out of bounds errors in the snapshot. */
+        last_applied = sps.last_included_index(); 
+        if (persistent_storage.state().can_safely_recover_log()) {
+            log.recover();
+        } else {
+            log.clear();
+        }
+        LOG_F(INFO, "Recovery successsful!");
         LOG_F(INFO, "term: %d | vote term: %d | "
                     "voted for: S%d | last applied: %d", 
             current_term, vote.term_voted, vote.voted_for, last_applied);
-        // recover log
-        log.recover(last_applied);
     }
 
     // If server is starting from scratch, delete any log artifacts.
-    else log.clear();
+    else {
+        log.clear();
+        persistent_storage.state().set_can_safely_recover_log(true);
+    }
 }
 
 /**
@@ -129,6 +164,9 @@ void Server::handler_RAFTmessage(const RAFTmessage &msg,
         else if (msg.has_appendentries_message())
             handler_AppendEntries(*req, msg.appendentries_message());
 
+        else if (msg.has_installsnapshot_message())
+            handler_InstallSnapshot(*req, msg.installsnapshot_message());
+
         else if (msg.has_clientrequest_message())
             handler_ClientRequest(*req, msg.clientrequest_message());
     }
@@ -139,6 +177,9 @@ void Server::handler_RAFTmessage(const RAFTmessage &msg,
 
     else if (msg.has_appendentries_message())
         handler_AppendEntries_response(msg.appendentries_message());
+
+    else if (msg.has_installsnapshot_message()) 
+        handler_InstallSnapshot_response(msg.installsnapshot_message());
 }
 
 /*****************************************************************************
@@ -210,6 +251,8 @@ void Server::handler_AppendEntries(Messenger::Request &req,
 
     // CASE: reject stale request
     if (ae.term() < current_term) {
+        LOG_F(INFO, "follower: received req. has stale term\n"
+                     "mine: %d, leader's: %d", current_term, ae.term());
         ae_response->set_success(false);
         req.sendResponse(response.SerializeAsString());
         return;
@@ -220,10 +263,33 @@ void Server::handler_AppendEntries(Messenger::Request &req,
     last_observed_leader_no = ae.leader_no();
     election_timer.start();
 
-    // CASE: heartbeat received, no log entries to process
-    if (ae.log_entries_size() == 0) return;
+    /* bug (perhaps not covered by raft): it's possible for ae.prev_log_idx() to
+    be out of range (too large) for 'log'. This happens when a server joins
+    late when the leader's log has some entries.
+    
+    To replicate the bug, start with 2 servers, append at least 1 log entry,
+    force a re-election (this updates and increases next_index, which
+    'prev_log_idx' derives from), join a new server, and append another log
+    entry. */
 
-    if (ae.prev_log_idx() > 0 && 
+    /* assumption for snapshotting project: no need to worry about this, as 
+       the fix for this bug isn't reltaed to snapshotting */
+
+    /* new (snapshotting): follower can also dip back into it's log. 
+        -if the follower is trying to index at physical 0, it's correct protocol
+        to use last_included_term
+        - it can't be earlier than that (last_included_index), because that's 
+        applied, so by the "State Machine Safety" property (fig 3), a valid 
+        leader would have that entry, and invalid leaders are ruled out above
+    */
+    bool fine_by_last_incl_term = 
+        ae.prev_log_idx() == persistent_storage.state().last_included_index() && 
+        ae.prev_log_term() == persistent_storage.state().last_included_term();
+
+    /* impossible for it to be lower by the comment above */
+    assert(ae.prev_log_idx() >= persistent_storage.state().last_included_index());
+
+    if (!fine_by_last_incl_term && ae.prev_log_idx() > 0 && 
         log[ae.prev_log_idx()].term != ae.prev_log_term()) {
         LOG_F(INFO, "S%d prev log entry doesn't match AE req from S%d", 
             server_no, ae.leader_no());
@@ -235,7 +301,7 @@ void Server::handler_AppendEntries(Messenger::Request &req,
     // append any new entries not already in log
     int new_entry_idx = ae.prev_log_idx() + 1;
     for (int i = 0; i < ae.log_entries_size(); i++, new_entry_idx++) {
-        LogEntry new_entry = {ae.log_entries(i).command(), 
+        RaftLog::LogEntry new_entry = {ae.log_entries(i).command(), 
             ae.log_entries(i).term()};
         // CASE: an entry at this index already exists in log
         if (new_entry_idx <= log.size()) {
@@ -243,7 +309,10 @@ void Server::handler_AppendEntries(Messenger::Request &req,
                 LOG_F(INFO, "S%d received conflicting log entry: "
                             "\"%s\" replaced with \"%s\"", 
                     server_no, 
-                    log[new_entry_idx].command.c_str(), 
+                    /* almost seems like a snapshotting bug, since .commanand
+                       isn't defined for last_included_index, but in that case
+                       we never get here because the terms must agree */
+                    log[new_entry_idx].command.c_str(),
                     new_entry.command.c_str()
                 );
 
@@ -254,6 +323,10 @@ void Server::handler_AppendEntries(Messenger::Request &req,
 
         LOG_F(INFO, "S%d replicating cmd: %s", server_no, 
             new_entry.command.c_str());
+        // new (snapshotting): snapshot guard on appends
+        if (log.physical_size() >= MAX_LOG_SIZE) {
+            write_snapshot();
+        }
         log.append(new_entry);
     }
 
@@ -264,6 +337,123 @@ void Server::handler_AppendEntries(Messenger::Request &req,
 
     ae_response->set_follower_next_idx(new_entry_idx);
     ae_response->set_success(true);
+    req.sendResponse(response.SerializeAsString());
+    LOG_F(INFO, "follower: sent next index of %d to leader", new_entry_idx);
+}
+
+
+/**
+ * Process and reply to InstallSnapshot RPCs from leader. 
+ */
+void Server::handler_InstallSnapshot(Messenger::Request &req, 
+                             const InstallSnapshot& is) {
+    LOG_F(INFO, "Called InstallSnapshot request handler");
+    /* implementation note:
+    -we always restart the process when receiving a request with offset 0
+    because it indicates a newer snapshot, whether or not it's a new leader */
+
+    RAFTmessage response;
+    InstallSnapshot *is_response = new InstallSnapshot();
+    response.set_allocated_installsnapshot_message(is_response);
+
+    lock_guard<mutex> lock(m);
+    response.set_term(current_term);
+    is_response->set_follower_no(server_no);
+    is_response->set_term(current_term);
+    is_response->set_done(is.done());
+
+    if (is.term() < current_term) {
+        LOG_F(INFO, "handler_InstallSnapshot: follower: received req. has stale"
+                    "term\n" "mine: %d, leader's: %d", current_term, is.term());
+        is_response->set_success(false);
+        req.sendResponse(response.SerializeAsString());
+        return;
+    }
+
+    // my deviation: reject if the snapshot is a prefix of the log
+    if (is.last_included_index() <= log.size()) {
+        is_response->set_success(false);
+        req.sendResponse(response.SerializeAsString());
+        return;
+    }    
+
+    /* handle checkup messages. the leader sends us the offset of the most 
+       recent chunk it sent us. if we haven't gotten that chunk yet, something
+       went went wrong, so reset. if we already got that chunk and are on a new
+       one, something also went wrong. note: both of these could be handled a 
+       little more intricately, but failing and retrying is simplest. 
+       
+       note: we're allowed to reason this way because of the TCP guarantee 
+       that messages are delivered in order sent, AND same with Messenger
+       (messages returned are in order of received) */
+    if (is.is_checkup()) {
+        bool success = (partially_installed_snapshot_offset == is.offset());
+        LOG_F(INFO, "handler_InstallSnapshot: received checkup message.\n"
+        "my ofs: %d, leader ofs: %d, success = %d", 
+        partially_installed_snapshot_offset, is.offset(), success);
+        is_response->set_success(success);
+        req.sendResponse(response.SerializeAsString());
+        return;
+    }
+
+    /* now we have a snapshot w/ chunk. bad cases: 
+       -we don't get the correct # snapshot. assuming correct TCP order, this
+       should only be possible if we crash midway through an install. */
+    if (is.offset() != 0 && partially_installed_snapshot_offset == -1) {
+        is_response->set_success(false);
+        req.sendResponse(response.SerializeAsString());
+        return;
+    }
+
+    // create a new file if it's the first chunk
+    int ofs_flags = std::ios::binary | 
+                    (is.offset() == 0 ? std::ios::trunc : std::ios::app);
+    std::ofstream ofs(partially_installed_snapshot_filename, ofs_flags);
+    if (!ofs) {
+        throw "handler_InstallSnapshot(): " + string(strerror(errno));
+    }
+    ofs << is.data();
+    ofs.close();
+    // update for future checkups
+    partially_installed_snapshot_offset = is.offset();
+
+    // if we're done, do finalizing stuff
+    if (is.done()) {
+        // discard the entire log
+        log.clear();
+        // note: must clear log first, or else can crash -> become inconsistent. 
+
+        string current_filename = persistent_storage.state().snapshot_filename(); 
+        string new_filename = (current_filename == snapshot_filename_options[0] 
+                               ? snapshot_filename_options[1] 
+                               : snapshot_filename_options[0]);
+
+        std::filesystem::path p = std::filesystem::current_path();
+        std::filesystem::rename(p/partially_installed_snapshot_filename, 
+                                p/new_filename);
+        persistent_storage.state().set_snapshot_filename(new_filename); 
+        persistent_storage.state().set_last_included_index(is.last_included_index());
+        persistent_storage.state().set_last_included_term(is.last_included_term());
+        persistent_storage.save();
+        last_applied = is.last_included_index();
+        commit_index = last_applied;
+        
+        if (current_filename != "") {
+            std::filesystem::remove(p/current_filename);
+        }
+
+        // apply the changes to the state machine (import)
+        if (!state_machine->importState(new_filename)) {
+            throw "handler_InstallSnapshot: importState failed: " 
+                  + string(strerror(errno));
+        }
+
+        // mark that we're done with install
+        partially_installed_snapshot_offset = -1;
+        LOG_F(INFO, "handler_InstallSnapshot: done with Install!");
+    } 
+
+    is_response->set_success(true);
     req.sendResponse(response.SerializeAsString());
 }
 
@@ -289,14 +479,18 @@ void Server::handler_ClientRequest(Messenger::Request &req,
     }
 
     LOG_F(INFO, "S%d logging CR: %s", server_no, cr.command().c_str());
+    if (log.physical_size() >= MAX_LOG_SIZE) {
+        write_snapshot();
+    }
     log.append({cr.command(), current_term});
     pending_requests.push(
         {std::move(req), log.size(), current_term}
     );
 
     // Send new entry to followers
-    for (int peer_no = 1; peer_no <= server_addrs.size(); peer_no++)
+    for (int peer_no = 1; peer_no <= server_addrs.size(); peer_no++) {
         replicate_log(peer_no);
+    }
 }
 
 /*****************************************************************************
@@ -319,9 +513,10 @@ void Server::handler_RequestVote_response(const RequestVote &rv)
         last_observed_leader_no = server_no;
         election_timer.stop();
         heartbeat_timer.start();
-        send_heartbeats();
         next_index.assign(server_addrs.size(), log.size() + 1);
         match_index.assign(server_addrs.size(), 0);
+        last_sent_snapshot_offset.assign(server_addrs.size(), -1);
+        send_heartbeats();
     }
 }
 
@@ -352,9 +547,50 @@ void Server::handler_AppendEntries_response(const AppendEntries &ae)
         }
     }
     else {
+        LOG_F(INFO, "append entires failed for follower #%d", ae.follower_no());
         next_index[ae.follower_no() - 1]--;
         replicate_log(ae.follower_no());
     }
+}
+
+
+/**
+* If leader, continue sending snapshots to follower. 
+*/
+void Server::handler_InstallSnapshot_response(const InstallSnapshot& is) {
+    /** 
+     * Implementation notes: 
+     * - philosophy: happily fail and retry if something's off. no intricate 
+     *   handling. 
+     */
+
+    LOG_F(INFO, "Called InstallSnapshot response handler");
+    lock_guard<mutex> lock(m);
+    if (server_state != LEADER) return;
+    int peer_idx = is.follower_no() - 1;
+    if (!is.success()) {
+        LOG_F(INFO, "InstallSnapshot: follower returned unsuccessfully");
+        // there was a problem, so abort the current install.
+        last_sent_snapshot_offset[peer_idx] = -1;
+        return;
+    }
+    if (is.done()) {
+        LOG_F(INFO, "InstallSnapshot: follower is DONE with install!");
+        // install complete, erase from map
+        last_sent_snapshot_offset[peer_idx] = -1;
+        // update their next_index and match_index
+        int lii = persistent_storage.state().last_included_index(); 
+        next_index[peer_idx] = lii + 1;
+        match_index[peer_idx] = lii;
+        return;
+    }
+
+    // send the next chunk
+    int offset = last_sent_snapshot_offset[peer_idx] + CHUNK_SIZE;    
+    last_sent_snapshot_offset[peer_idx] = offset;
+    RAFTmessage msg = construct_InstallSnapshot(offset, false);
+    messenger.sendRequest(server_addrs[peer_idx + 1], msg.SerializeAsString());
+    LOG_F(INFO, "InstallSnapshot: sent chunk w/ offset %d", offset);
 }
 
 /*****************************************************************************
@@ -393,15 +629,12 @@ void Server::start_election()
  */
 void Server::send_heartbeats()
 {
+    /* todo (after 191): heartbeats should contain missing log entires */
     if (server_state != LEADER) return;
     heartbeat_timer.start();
-    RAFTmessage heartbeat_msg;
-    AppendEntries *ae_heartbeat = new AppendEntries();
-    heartbeat_msg.set_allocated_appendentries_message(ae_heartbeat);
-    heartbeat_msg.set_term(current_term);
-    ae_heartbeat->set_term(current_term);
-    ae_heartbeat->set_leader_no(server_no);
-    broadcast_msg(heartbeat_msg);
+    for (int peer_no = 1; peer_no <= server_addrs.size(); peer_no++) {
+        replicate_log(peer_no);
+    }
 }
 
 /*****************************************************************************
@@ -478,7 +711,32 @@ void Server::apply_log_entries_task()
  */
 void Server::replicate_log(int peer_no) {
     int peer_idx = peer_no - 1;
-    if (peer_no == server_no || log.size() < next_index[peer_idx]) return;
+    if (peer_no == server_no /*|| log.size() < next_index[peer_idx]*/) return;
+
+    /* new (snapshotting) */
+    LOG_F(INFO, "replicate log: peer #%d: next idx: %d, LII: %d", peer_no, 
+        next_index[peer_idx], persistent_storage.state().last_included_index());
+    /* InstallSnapshot send condition */
+    if (next_index[peer_idx] <= 
+        persistent_storage.state().last_included_index()) {
+
+        // either initiate the installation process, or send a checkup
+        bool checkup = true;
+        if (last_sent_snapshot_offset[peer_idx] == -1) {
+            checkup = false;
+            last_sent_snapshot_offset[peer_idx] = 0;
+        }
+        int offset = last_sent_snapshot_offset[peer_idx];
+        RAFTmessage msg = construct_InstallSnapshot(offset, checkup);
+        messenger.sendRequest(server_addrs[peer_no], 
+                              msg.SerializeAsString()); 
+        string log_msg = (checkup ?  
+                          "replicate_log: sent InstallSnapshot checkup" : 
+                          "replicate_log: sent initial InstallSnapshot");
+        LOG_F(INFO, "%s", log_msg.c_str()); 
+        return;
+    }
+
 
     RAFTmessage msg;
     AppendEntries* ae = new AppendEntries();
@@ -489,8 +747,19 @@ void Server::replicate_log(int peer_no) {
     ae->set_leader_commit(commit_index);
     ae->set_prev_log_idx(next_index[peer_idx] - 1);
     if (next_index[peer_idx] - 1 > 0) {
-        ae->set_prev_log_term(log[next_index[peer_idx] - 1].term);
+        /* new (snapshotting): use last_included_term if needed. */
+        int last_incl_index = persistent_storage.state().last_included_index();
+        assert(next_index[peer_idx] - 1 >= last_incl_index);
+        if (next_index[peer_idx] - 1 == last_incl_index) { 
+            int term = persistent_storage.state().last_included_term();
+            LOG_F(INFO, "replicate_log(): reached special case, sending term %d",
+                  term);
+            ae->set_prev_log_term(term);
+        } else {
+            ae->set_prev_log_term(log[next_index[peer_idx] - 1].term);
+        }
     }
+
 
     // add log entries to request
     for (int new_entry_idx = next_index[peer_idx]; 
@@ -514,4 +783,121 @@ void Server::broadcast_msg(const RAFTmessage &msg)
         if (peer_no == server_no) continue;
         messenger.sendRequest(peer_addr, msg_str);
     }
+}
+
+
+/*****************************************************************************
+ *                             SNAPSHOT-RELATED                              *
+ *****************************************************************************/
+
+
+ /** 
+  * Update RAFT's current snapshot with a new one.  The state lock must be held
+  * before call.
+  *
+  * The steps are performed in a fault-tolerant way, such 
+  * that the worst case is that a new snapshot was written but the system 
+  * crashes before RAFT gets a chance to bookkeep this and upgrade it's snapshot.
+  * Importantly, snapshots are never deleted unsafely. 
+  */
+  void Server::write_snapshot() {
+    if (server_state == LEADER) {
+        // special case: if we snapshot while other installs are happening, wipe
+        // all of them out and start over. this is simpler than waiting to
+        // finish the installs in some way, although less efficient. however,
+        // it's such a rare ocurrence that I prefer the simplicity tradeoff 
+        std::fill(last_sent_snapshot_offset.begin(), 
+                  last_sent_snapshot_offset.end(), 
+                  -1);
+    }
+    // Edge case: this can happen during recovery. 
+    if (last_applied == persistent_storage.state().last_included_index()) {
+        return;
+    }
+    // create alt snapshot
+    string current_filename = persistent_storage.state().snapshot_filename(); 
+    string new_filename = (current_filename == snapshot_filename_options[0] 
+                            ? snapshot_filename_options[1] 
+                            : snapshot_filename_options[0]);
+
+    /* Above, I've chosen an naming scheme that alternates between two names.
+       The most natural solution is to choose a temporary name for
+       the new snapshot, and then once it's written, delete the old snapshot 
+       and update the new snapshot to the main name. However, you run into 
+       issues. If you update p_store to temp, then delete and rename, then 
+       you can crash before updating p_store. If you don't update p_store at 
+       all, then you can crash with just temp on disk, which seems okay, but 
+       then that's a check you have to do at recovery. 
+
+       Overall, this seems to be the only way to guarantee the persistent
+       storage filename always points to a valid snapshot (valid, but not
+       always new).  */
+    
+    if (!state_machine->exportState(new_filename)) {
+        string msg = "write_snapshot(): " + string(strerror(errno));
+        LOG_F(INFO, "%s", msg.c_str());
+        throw "write_snapshot(): " + string(strerror(errno));
+    }
+
+    //write metadata
+    // note: must do last_applied instead of commit_index because we can only
+    // snapshot safely once something is applied
+    int idx = last_applied;
+    int term = log[idx].term;
+    int prev_snapshot_size = persistent_storage.state().last_included_index();
+    persistent_storage.state().set_last_included_index(idx);
+    persistent_storage.state().set_last_included_term(term);
+    persistent_storage.state().set_snapshot_filename(new_filename);
+    persistent_storage.state().set_can_safely_recover_log(false);
+    persistent_storage.save();
+    LOG_F(INFO, "write_snapshot:() last included index is now %d, term is %d", 
+          idx, term);
+
+    // delete the old snapshot
+    if (current_filename != "" && std::remove(current_filename.c_str()) != 0) {
+        string msg = "write_snapshot(): " + string(strerror(errno));
+        LOG_F(INFO, "%s", msg.c_str());
+        throw 5;
+    }
+
+    LOG_F(INFO, "write_snapshot(): old phys log size: %d", log.physical_size());
+    // delete log up through end of snapshot
+    log.clip_front(idx - prev_snapshot_size); // note: this is a physical index
+    persistent_storage.state().set_can_safely_recover_log(true);
+    persistent_storage.save();
+    LOG_F(INFO, "write_snapshot: new phys log size: %d", log.physical_size());
+  }
+
+
+/**
+ * Construct an InstallSnapshot RPC, setting all fields except 'data', which is 
+ * only done when 'checkup' is false.  
+ *
+ * The state lock should be held during this call. 
+ */
+RAFTmessage Server::construct_InstallSnapshot(int offset, bool is_checkup) {
+    RAFTmessage msg;
+    InstallSnapshot *is_req = new InstallSnapshot();
+    msg.set_allocated_installsnapshot_message(is_req);
+    msg.set_term(current_term);
+    is_req->set_term(current_term);
+    is_req->set_leader_no(server_no);
+    auto& ps = persistent_storage.state();
+    is_req->set_last_included_index(ps.last_included_index());
+    is_req->set_last_included_term(ps.last_included_term());
+    
+    char buffer[CHUNK_SIZE];
+    bool done = false;
+    int bytesRead = 
+        readFileChunk(ps.snapshot_filename(), buffer, offset, CHUNK_SIZE);
+    if (bytesRead < CHUNK_SIZE) {
+        LOG_F(INFO, "construct_InstSnap: sending last chunk");
+        done = true;
+    }
+
+    is_req->set_offset(offset);
+    is_req->set_data(string(buffer, bytesRead));
+    is_req->set_done(done);
+    is_req->set_is_checkup(false);
+    return msg;
 }
